@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 360" width="100%" height="auto">
+  <defs>
+    <linearGradient id="barGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+    <linearGradient id="optGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#34d399" />
+      <stop offset="100%" stop-color="#059669" />
+    </linearGradient>
+  </defs>
+  <style>
+    .title { font: bold 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: #f1f5f9; }
+    .subtitle { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: #94a3b8; }
+    .axis { stroke: #334155; stroke-width: 1; }
+    .grid { stroke: #1e293b; stroke-dasharray: 4,4; }
+    .tick-label { font: 11px monospace; fill: #64748b; text-anchor: end; }
+    .bar-label { font: bold 12px monospace; fill: #f8fafc; text-anchor: middle; }
+    .bar-sub { font: 10px -apple-system, BlinkMacSystemFont, sans-serif; fill: #cbd5e1; text-anchor: middle; }
+    .x-label { font: bold 11px -apple-system, BlinkMacSystemFont, sans-serif; fill: #e2e8f0; text-anchor: middle; }
+    .reduction { font: bold 11px monospace; fill: #34d399; text-anchor: middle; }
+  </style>
+  <rect width="760" height="360" rx="10" fill="#0f172a" />
+  <text x="30" y="32" class="title">Cold 5-Token Decode Latency Progression (s/token)</text>
+  <text x="30" y="48" class="subtitle">DeepSeek-V4 REAP-150B · 12 GB RAM · 4C/8T Laptop (Lower is Better)</text>
+  <line x1="80" y1="290.0" x2="720" y2="290.0" class="grid" />
+  <text x="70" y="294.0" class="tick-label">0.0s</text>
+  <line x1="80" y1="232.5" x2="720" y2="232.5" class="grid" />
+  <text x="70" y="236.5" class="tick-label">3.0s</text>
+  <line x1="80" y1="175.0" x2="720" y2="175.0" class="grid" />
+  <text x="70" y="179.0" class="tick-label">6.0s</text>
+  <line x1="80" y1="117.5" x2="720" y2="117.5" class="grid" />
+  <text x="70" y="121.5" class="tick-label">9.0s</text>
+  <line x1="80" y1="60.0" x2="720" y2="60.0" class="grid" />
+  <text x="70" y="64.0" class="tick-label">12.0s</text>
+  <rect x="104.0" y="83.76666666666668" width="58.66666666666667" height="206.23333333333332" rx="4" fill="url(#barGrad)" />
+  <text x="133.33333333333334" y="75.76666666666668" class="bar-label">10.76 s</text>
+  <text x="133.33333333333334" y="310" class="x-label">Initial</text>
+  <text x="133.33333333333334" y="324" class="bar-sub">Baseline</text>
+  <rect x="210.66666666666666" y="137.625" width="58.66666666666667" height="152.375" rx="4" fill="url(#barGrad)" />
+  <text x="240.0" y="129.625" class="bar-label">7.95 s</text>
+  <text x="240.0" y="310" class="x-label">Fix 1</text>
+  <text x="240.0" y="324" class="bar-sub">Direct Win</text>
+  <rect x="317.33333333333337" y="165.22500000000002" width="58.66666666666667" height="124.77499999999999" rx="4" fill="url(#barGrad)" />
+  <text x="346.6666666666667" y="157.22500000000002" class="bar-label">6.51 s</text>
+  <text x="346.6666666666667" y="310" class="x-label">Fix 2</text>
+  <text x="346.6666666666667" y="324" class="bar-sub">Win32 Handles</text>
+  <rect x="424.00000000000006" y="182.85833333333335" width="58.66666666666667" height="107.14166666666667" rx="4" fill="url(#barGrad)" />
+  <text x="453.33333333333337" y="174.85833333333335" class="bar-label">5.59 s</text>
+  <text x="453.33333333333337" y="310" class="x-label">Fix 3</text>
+  <text x="453.33333333333337" y="324" class="bar-sub">Overlap+Stack</text>
+  <rect x="530.6666666666666" y="204.51666666666665" width="58.66666666666667" height="85.48333333333333" rx="4" fill="url(#barGrad)" />
+  <text x="560.0" y="196.51666666666665" class="bar-label">4.46 s</text>
+  <text x="560.0" y="310" class="x-label">Fix 4</text>
+  <text x="560.0" y="324" class="bar-sub">Core Autotune</text>
+  <rect x="637.3333333333334" y="206.43333333333334" width="58.66666666666667" height="83.56666666666666" rx="4" fill="url(#optGrad)" />
+  <text x="666.6666666666667" y="198.43333333333334" class="bar-label">4.36 s</text>
+  <text x="666.6666666666667" y="310" class="x-label">Fix 5</text>
+  <text x="666.6666666666667" y="324" class="bar-sub">Scale Direct</text>
+  <text x="666.6666666666667" y="182.43333333333334" class="reduction">-59.4%</text>
+  <line x1="80" y1="290" x2="720" y2="290" class="axis" />
+</svg>

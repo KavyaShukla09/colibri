@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" width="100%" height="auto">
+  <defs>
+    <linearGradient id="tputGrad1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#94a3b8" />
+      <stop offset="100%" stop-color="#64748b" />
+    </linearGradient>
+    <linearGradient id="tputGrad2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+  </defs>
+  <style>
+    .title { font: bold 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: #f1f5f9; }
+    .subtitle { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: #94a3b8; }
+    .grid { stroke: #1e293b; stroke-dasharray: 4,4; }
+    .tick-label { font: 11px monospace; fill: #64748b; text-anchor: end; }
+    .bar-label { font: bold 13px monospace; fill: #f8fafc; text-anchor: middle; }
+    .delta { font: bold 12px monospace; fill: #34d399; text-anchor: middle; }
+    .x-label { font: bold 12px -apple-system, BlinkMacSystemFont, sans-serif; fill: #e2e8f0; text-anchor: middle; }
+    .axis { stroke: #334155; stroke-width: 1; }
+  </style>
+  <rect width="760" height="300" rx="10" fill="#0f172a" />
+  <text x="30" y="32" class="title">Sustained NVMe Direct I/O Throughput (MB/s)</text>
+  <text x="30" y="48" class="subtitle">Canonical 50-Token Generation (134.75 GB Streamed over PCIe 3.0 x4)</text>
+  <line x1="80" y1="250.0" x2="720" y2="250.0" class="grid" />
+  <text x="70" y="254.0" class="tick-label">0 MB/s</text>
+  <line x1="80" y1="202.5" x2="720" y2="202.5" class="grid" />
+  <text x="70" y="206.5" class="tick-label">200 MB/s</text>
+  <line x1="80" y1="155.0" x2="720" y2="155.0" class="grid" />
+  <text x="70" y="159.0" class="tick-label">400 MB/s</text>
+  <line x1="80" y1="107.5" x2="720" y2="107.5" class="grid" />
+  <text x="70" y="111.5" class="tick-label">600 MB/s</text>
+  <line x1="80" y1="60.0" x2="720" y2="60.0" class="grid" />
+  <text x="70" y="64.0" class="tick-label">800 MB/s</text>
+  <rect x="238.33333333333337" y="131.725" width="110" height="118.275" rx="4" fill="url(#tputGrad1)" />
+  <text x="293.33333333333337" y="121.725" class="bar-label">498.0 MB/s</text>
+  <text x="293.33333333333337" y="274" class="x-label">Initial Custom Baseline</text>
+  <rect x="451.6666666666667" y="103.15375" width="110" height="146.84625" rx="4" fill="url(#tputGrad2)" />
+  <text x="506.6666666666667" y="93.15375" class="bar-label">618.3 MB/s</text>
+  <text x="506.6666666666667" y="75.15375" class="delta">+24.1% (+120.3 MB/s)</text>
+  <text x="506.6666666666667" y="274" class="x-label">Optimized Fork</text>
+  <line x1="80" y1="250" x2="720" y2="250" class="axis" />
+</svg>

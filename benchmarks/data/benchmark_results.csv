@@ -1,0 +1,8 @@
+stage,wall_time_sec,ttft_sec,decode_time_sec,decode_s_per_token,buffered_fallbacks,direct_io_pct
+Initial Custom Baseline,133.41,65.57,43.02,10.76,2624,71.0
+Fix 1 - Aligned Direct Window,108.20,63.40,31.80,7.95,0,94.0
+Fix 2 - Win32 Thread Handles,92.05,61.10,26.05,6.51,0,94.0
+Fix 3 - Overlapped MoE & Stack,84.42,58.69,22.36,5.59,0,94.0
+Fix 4 - Physical-Core Autotune,83.47,62.78,17.83,4.46,0,94.0
+Fix 5 - Scale Direct I/O,83.06,62.78,17.46,4.36,0,100.0
+Canonical Sustained 50 Tokens,284.53,62.48,218.61,4.461,0,100.0

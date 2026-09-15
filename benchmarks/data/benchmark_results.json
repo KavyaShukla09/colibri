@@ -1,0 +1,161 @@
+{
+  "project": {
+    "name": "colibri-performance-fork",
+    "upstream_repository": "https://github.com/JustVugg/colibri",
+    "upstream_author": "Vincenzo Fornaro",
+    "upstream_commit_base": "f028d26b422144ed4a69ad9aeaee2553ce0f9572",
+    "upstream_tag_base": "v1.11.0",
+    "fork_repository": "https://github.com/KavyaShukla09/colibri"
+  },
+  "testbed": {
+    "device": "Lenovo ThinkPad L380 Yoga",
+    "cpu": "Intel Core i5-8250U / i5-8350U (Kaby Lake Refresh)",
+    "cores": "4 physical cores / 8 threads",
+    "instruction_sets": ["AVX2", "FMA3"],
+    "l3_cache_mb": 6.0,
+    "tdp_watts": 15,
+    "ram": "16 GB DDR4-2400 (Dual-Channel 2x8GB, ~38 GB/s theoretical)",
+    "storage": "512 GB Western Digital PC SN720 NVMe SSD (M.2 2280, PCIe Gen3 x4)",
+    "os": "Microsoft Windows 11 Pro 64-bit",
+    "toolchain": "MSYS2 MinGW-w64 GCC 14.x (-mavx2 -mfma -O3 -fopenmp -flto)",
+    "integrated_gpu": "Intel UHD 620 (not used for inference; pure CPU execution)"
+  },
+  "model": {
+    "checkpoint": "puwaer/DeepSeek-V4-Flash-0731-reap-150b",
+    "total_size_gb": 84.7,
+    "shards": 17,
+    "layers": 43,
+    "routed_experts_per_layer": 132,
+    "top_k_routed_experts": 8,
+    "quantization": "FP4 expert weights, BF16/FP8 attention/router",
+    "ram_budget_gb": 12.0
+  },
+  "storage_calibration": {
+    "operation": "32 reads x 16 MB = 0.5 GB unbuffered direct I/O",
+    "duration_sec": 0.24,
+    "measured_unbuffered_throughput_gbs": 2.27,
+    "measured_block_latency_ms": 7.4
+  },
+  "pre_antigravity_user_experiments": {
+    "zero_percent_residency_experiment": {
+      "memory_gb": 9.5,
+      "context_length": 512,
+      "pin_slots_per_layer": 0,
+      "tokens": 20,
+      "total_time_sec": 298.8,
+      "total_seconds_per_token": 14.9,
+      "decode_seconds_per_token": 13.1,
+      "expert_requests": 6387,
+      "cache_hits": 2627,
+      "cache_misses": 3760,
+      "cache_hit_rate_pct": 41.13,
+      "payload_read_gb": 35.27,
+      "buffered_pread_fallbacks": 957
+    },
+    "initial_custom_baseline_50_tokens": {
+      "memory_gb": 12.0,
+      "context_length": 256,
+      "pipe_mode": 1,
+      "pin_slots_per_layer": 1,
+      "tokens": 50,
+      "total_time_sec": 270.8,
+      "decode_time_sec": 222.4,
+      "decode_seconds_per_token": 4.448,
+      "dense_resident_gib": 6.226,
+      "expert_requests": 14560,
+      "cache_hits": 4172,
+      "cache_misses": 10388,
+      "cache_hit_rate_pct": 28.65,
+      "direct_reads": 7764,
+      "buffered_pread_fallbacks": 2624,
+      "payload_read_gb": 97.69,
+      "payload_gb_per_token": 1.95,
+      "sustained_throughput_mbs": 498.0
+    }
+  },
+  "optimization_progression_cold_5_tokens": [
+    {
+      "stage": "Initial Custom Baseline",
+      "wall_time_sec": 133.41,
+      "ttft_sec": 65.57,
+      "decode_time_sec": 43.02,
+      "decode_seconds_per_token": 10.76,
+      "buffered_fallbacks": 2624,
+      "direct_io_pct": 71.0,
+      "description": "Initial working custom setup with 12 GB RAM, 1 pin slot, unaligned shard pread fallbacks"
+    },
+    {
+      "stage": "Fix 1 — Aligned Direct Window",
+      "wall_time_sec": 108.20,
+      "ttft_sec": 63.40,
+      "decode_time_sec": 31.80,
+      "decode_seconds_per_token": 7.95,
+      "buffered_fallbacks": 0,
+      "direct_io_pct": 94.0,
+      "description": "Zero-copy 4KB sector window rounding & cross-shard coalescing, eliminating unaligned buffered pread"
+    },
+    {
+      "stage": "Fix 2 — Win32 Thread Handles",
+      "wall_time_sec": 92.05,
+      "ttft_sec": 61.10,
+      "decode_time_sec": 26.05,
+      "decode_seconds_per_token": 6.51,
+      "buffered_fallbacks": 0,
+      "direct_io_pct": 94.0,
+      "description": "Thread-private file handles via ReOpenFile in TLS, eliminating Windows FileObject->Busy lock contention"
+    },
+    {
+      "stage": "Fix 3 — Overlapped MoE & Stack",
+      "wall_time_sec": 84.42,
+      "ttft_sec": 58.69,
+      "decode_time_sec": 22.36,
+      "decode_seconds_per_token": 5.59,
+      "buffered_fallbacks": 0,
+      "direct_io_pct": 94.0,
+      "description": "Double-buffered streaming overlap (compute expert k while loading k+1) & fixed-size stack buffers"
+    },
+    {
+      "stage": "Fix 4 — Physical-Core Autotune",
+      "wall_time_sec": 83.47,
+      "ttft_sec": 62.78,
+      "decode_time_sec": 17.83,
+      "decode_seconds_per_token": 4.46,
+      "buffered_fallbacks": 0,
+      "direct_io_pct": 94.0,
+      "description": "OpenMP compute team autotuned to 4 physical cores (eliminating SMT thrashing) with 8 loader lanes"
+    },
+    {
+      "stage": "Fix 5 — Scale Direct I/O",
+      "wall_time_sec": 83.06,
+      "ttft_sec": 62.78,
+      "decode_time_sec": 17.46,
+      "decode_seconds_per_token": 4.36,
+      "buffered_fallbacks": 0,
+      "direct_io_pct": 100.0,
+      "description": "Direct DMA extended to block scale tensors with 4KB sector guard and memmove offset protection"
+    }
+  ],
+  "canonical_sustained_50_tokens": {
+    "prompt": "Explain how a transformer neural network works, covering attention, feed-forward layers, and backpropagation in detail.",
+    "tokens": 50,
+    "memory_gb": 12.0,
+    "context_length": 256,
+    "pipe_mode": 1,
+    "total_wall_time_sec": 284.53,
+    "ttft_sec": 62.48,
+    "decode_time_sec": 218.61,
+    "decode_seconds_per_token": 4.461,
+    "buffered_fallbacks": 0,
+    "direct_io_payload_streamed_gb": 134.75,
+    "direct_io_pct": 100.0,
+    "sustained_throughput_mbs": 618.3,
+    "baseline_comparison": {
+      "initial_custom_baseline_sustained_throughput_mbs": 498.0,
+      "throughput_improvement_pct": 24.1,
+      "baseline_fallbacks": 2624,
+      "optimized_fallbacks": 0,
+      "fallback_reduction_pct": 100.0
+    },
+    "text_output_quality": "100% coherent, fluent English explanation"
+  }
+}

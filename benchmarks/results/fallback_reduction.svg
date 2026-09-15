@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" width="100%" height="auto">
+  <defs>
+    <linearGradient id="fallbackGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f87171" />
+      <stop offset="100%" stop-color="#dc2626" />
+    </linearGradient>
+  </defs>
+  <style>
+    .title { font: bold 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: #f1f5f9; }
+    .subtitle { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: #94a3b8; }
+    .grid { stroke: #1e293b; stroke-dasharray: 4,4; }
+    .tick-label { font: 11px monospace; fill: #64748b; text-anchor: end; }
+    .bar-label { font: bold 13px monospace; fill: #f8fafc; text-anchor: middle; }
+    .zero-label { font: bold 13px monospace; fill: #34d399; text-anchor: middle; }
+    .x-label { font: bold 12px -apple-system, BlinkMacSystemFont, sans-serif; fill: #e2e8f0; text-anchor: middle; }
+    .axis { stroke: #334155; stroke-width: 1; }
+  </style>
+  <rect width="760" height="300" rx="10" fill="#0f172a" />
+  <text x="30" y="32" class="title">Buffered pread Fallback Reads Elimination</text>
+  <text x="30" y="48" class="subtitle">Canonical 50-Token Execution (2,624 fallbacks → Exactly 0)</text>
+  <line x1="80" y1="250.0" x2="720" y2="250.0" class="grid" />
+  <text x="70" y="254.0" class="tick-label">0</text>
+  <line x1="80" y1="186.66666666666669" x2="720" y2="186.66666666666669" class="grid" />
+  <text x="70" y="190.66666666666669" class="tick-label">1000</text>
+  <line x1="80" y1="123.33333333333334" x2="720" y2="123.33333333333334" class="grid" />
+  <text x="70" y="127.33333333333334" class="tick-label">2000</text>
+  <line x1="80" y1="60.0" x2="720" y2="60.0" class="grid" />
+  <text x="70" y="64.0" class="tick-label">3000</text>
+  <rect x="248.33333333333337" y="83.81333333333333" width="90" height="166.18666666666667" rx="4" fill="url(#fallbackGrad)" />
+  <text x="293.33333333333337" y="73.81333333333333" class="bar-label">2,624 fallbacks</text>
+  <text x="293.33333333333337" y="274" class="x-label">Initial Custom Baseline</text>
+  <rect x="461.6666666666667" y="246" width="90" height="4" rx="2" fill="#34d399" />
+  <text x="506.6666666666667" y="236" class="zero-label">0 FALLBACKS (100% Direct DMA)</text>
+  <text x="506.6666666666667" y="274" class="x-label">Optimized Fork (Fixes 1-5)</text>
+  <line x1="80" y1="250" x2="720" y2="250" class="axis" />
+</svg>
