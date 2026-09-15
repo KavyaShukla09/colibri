@@ -1086,6 +1086,25 @@ uint64_t coli_v4_os_available_memory(void) {
 #endif
 }
 
+uint64_t coli_v4_os_total_memory(void) {
+#ifdef _WIN32
+    MEMORYSTATUSEX status;
+    memset(&status, 0, sizeof(status));
+    status.dwLength = sizeof(status);
+    return GlobalMemoryStatusEx(&status) ? (uint64_t)status.ullTotalPhys : 0;
+#elif defined(__APPLE__)
+    int mib[2] = {CTL_HW, HW_MEMSIZE};
+    uint64_t mem = 0;
+    size_t len = sizeof(mem);
+    if (sysctl(mib, 2, &mem, &len, NULL, 0) == 0) return mem;
+    return 0;
+#else
+    long pages = sysconf(_SC_PHYS_PAGES), page_size = sysconf(_SC_PAGESIZE);
+    if (pages <= 0 || page_size <= 0) return 0;
+    return (uint64_t)pages * (uint64_t)page_size;
+#endif
+}
+
 int coli_v4_resource_plan_compute(
     ColiDeepSeekV4ResourcePlan *plan,
     const ColiDeepSeekV4ResourceInputs *inputs,
@@ -1098,8 +1117,11 @@ int coli_v4_resource_plan_compute(
     memset(plan, 0, sizeof(*plan));
     plan->os_available_bytes = inputs->available_bytes;
     uint64_t available = inputs->available_bytes;
+    uint64_t total_ram = coli_v4_os_total_memory();
+    if (!total_ram) total_ram = available;
+    uint64_t max_allowed_user_limit = total_ram > (1024 * MIB) ? total_ram - (1024 * MIB) : total_ram;
     int explicit_process_limit = inputs->user_limit_bytes &&
-        inputs->user_limit_bytes < available;
+        (inputs->user_limit_bytes <= max_allowed_user_limit || inputs->user_limit_bytes < available);
     if (explicit_process_limit)
         available = inputs->user_limit_bytes;
     plan->planner_available_bytes = available;
@@ -4505,7 +4527,7 @@ enum { DUAL_EXPERT_LOADER_MAX = 16 };
  * resta la manopola per dischi che si comportano diversamente.
  * EN: pool default only; the CPU reservation keeps subtracting the compile
  * constant. 9 vs 3 measured on the real checkpoint: 1.41x decode, no OOM. */
-enum { DUAL_EXPERT_LOADER_DEFAULT_LANES = 9 };
+enum { DUAL_EXPERT_LOADER_DEFAULT_LANES = 8 };
 
 static int dual_loader_lanes(void) {
     static int lanes;
@@ -4855,16 +4877,20 @@ static int moe_token_pipeline(float *output,
     float *gate = malloc(gate_count * sizeof(*gate));
     int missing_gate = !gate;
 #endif
-    float *route_weights = malloc((size_t)topk * sizeof(*route_weights));
-    int *indices = malloc((size_t)topk * sizeof(*indices));
-    int *expert_ids = malloc((size_t)topk * sizeof(*expert_ids));
-    float *expert_weights = malloc((size_t)topk * sizeof(*expert_weights));
-    float *expert_output = malloc((size_t)d * sizeof(*expert_output));
-    float *shared_output = malloc((size_t)d * sizeof(*shared_output));
+    float route_weights_buf[32], expert_weights_buf[32];
+    int indices_buf[32], expert_ids_buf[32];
+    float expert_output_buf[4096], shared_output_buf[4096];
+    float *route_weights = topk <= 32 ? route_weights_buf : malloc((size_t)topk * sizeof(*route_weights));
+    int *indices = topk <= 32 ? indices_buf : malloc((size_t)topk * sizeof(*indices));
+    int *expert_ids = topk <= 32 ? expert_ids_buf : malloc((size_t)topk * sizeof(*expert_ids));
+    float *expert_weights = topk <= 32 ? expert_weights_buf : malloc((size_t)topk * sizeof(*expert_weights));
+    float *expert_output = d <= 4096 ? expert_output_buf : malloc((size_t)d * sizeof(*expert_output));
+    float *shared_output = d <= 4096 ? shared_output_buf : malloc((size_t)d * sizeof(*shared_output));
     if (missing_gate || !route_weights || !indices || !expert_ids || !expert_weights ||
         !expert_output || !shared_output) {
-        free(shared_output); free(expert_output); free(expert_weights);
-        free(expert_ids); free(indices); free(route_weights); free(gate);
+        if (d > 4096) { free(shared_output); free(expert_output); }
+        if (topk > 32) { free(expert_weights); free(expert_ids); free(indices); free(route_weights); }
+        free(gate);
         return -1;
     }
 #ifdef COLI_V4_DISABLE_BF16_ROUTE
@@ -4972,16 +4998,240 @@ static int moe_token_pipeline(float *output,
     if (!result) memset(output, 0, (size_t)d * sizeof(*output));
 
 #ifdef COLI_V4_EXPERIMENTAL_DUAL_EXPERT_LOADER
-    ColiExpertView *views = malloc((size_t)selected * sizeof(*views));
 #ifdef COLI_V4_GPU_TIER
-    int gpu_compute = 0;
-#endif
-    if (!views) result = -1;
-    if (!result) {
-        memset(views, 0, (size_t)selected * sizeof(*views));
-#ifdef COLI_V4_GPU_TIER
-        gpu_compute = 1;
-#endif
+    if (store->gpu) {
+        ColiExpertView *views = malloc((size_t)selected * sizeof(*views));
+        int gpu_compute = 0;
+        if (!views) result = -1;
+        if (!result) {
+            memset(views, 0, (size_t)selected * sizeof(*views));
+            gpu_compute = 1;
+            for (int current = 0; !result && current < selected; current++) {
+                int slot = current % dual_loader_lanes();
+                if (!loader_active[slot] ||
+                    profiled_expert_load_finish(&loaders[slot]) != 0) {
+                    result = -1; break;
+                }
+                loader_active[slot] = 0;
+                if (jobs[slot].result) { result = -1; break; }
+                views[current] = jobs[slot].view;
+                if (store->gpu) {
+                    if (coli_v4_hybrid_enabled())
+                        /* peek only: uploads are decided once the token's full
+                         * miss count is known, by the q* pass below */
+                        coli_v4_gpu_expert_peek(store, &views[current]);
+                    else
+                        coli_v4_gpu_expert_attach(store, &views[current]);
+                }
+                if (!views[current].gate.gpu || !views[current].up.gpu ||
+                    !views[current].down.gpu)
+                    gpu_compute = 0;
+
+                int next = current + dual_loader_lanes();
+                if (next < selected) {
+                    memset(&jobs[slot], 0, sizeof(jobs[slot]));
+                    jobs[slot].store = store;
+                    jobs[slot].key = (ColiExpertKey){weights->plan.layer,
+                                                    expert_ids[next]};
+                    jobs[slot].result = -1;
+                    if (profiled_expert_load_start(&loaders[slot],
+                                                   &jobs[slot]) != 0)
+                        result = -1;
+                    else
+                        loader_active[slot] = 1;
+                }
+            }
+            for (int slot = 0; slot < dual_loader_lanes(); slot++)
+                if (loader_active[slot]) {
+                    profiled_expert_load_finish(&loaders[slot]);
+                    if (!jobs[slot].result)
+                        coli_expert_release(store, &jobs[slot].view);
+                }
+        }
+        int hybrid_gpu_count = 0;
+        int hybrid_pending_drain = 0;   /* async DMA enqueued, not yet drained */
+        int hybrid_uploads = 0;
+        struct timespec hybrid_fill_t0 = {0, 0};
+        if (!result && coli_v4_hybrid_enabled() && store->gpu && !gpu_compute) {
+            int *missing = malloc((size_t)selected * sizeof(*missing));
+            if (missing) {
+                int miss_n = 0;
+                for (int i = 0; i < selected; i++)
+                    if (!views[i].gate.gpu || !views[i].up.gpu ||
+                        !views[i].down.gpu)
+                        missing[miss_n++] = i;
+                int fill = coli_v4_hybrid_fill_count(
+                    miss_n, g_v4_hyb_fill_bw, g_v4_hyb_host_bw);
+                if (g_v4_hyb_host_bw <= 0.0 && fill >= miss_n && miss_n > 1)
+                    fill = miss_n - 1;
+                static int hybrid_async_ok = -1;
+                if (hybrid_async_ok < 0)
+                    hybrid_async_ok = coli_v4_gpu_expert_drain(store) == 0;
+                clock_gettime(CLOCK_MONOTONIC, &hybrid_fill_t0);
+                for (int i = 0; i < fill; i++) {
+                    int v = missing[i];
+                    int attached = hybrid_async_ok
+                        ? coli_v4_gpu_expert_attach_async(store, &views[v])
+                        : coli_v4_gpu_expert_attach(store, &views[v]);
+                    if (attached == 0 &&
+                        views[v].gate.gpu && views[v].up.gpu &&
+                        views[v].down.gpu) {
+                        hybrid_uploads++;
+                        hybrid_pending_drain = hybrid_async_ok;
+                        g_v4_hyb_upload_n++;
+                    }
+                }
+                if (miss_n > fill)
+                    g_v4_hyb_skip_n += (unsigned long long)(miss_n - fill);
+                free(missing);
+            }
+            for (int i = 0; i < selected; i++)
+                if (views[i].gate.gpu && views[i].up.gpu && views[i].down.gpu)
+                    hybrid_gpu_count++;
+            if (hybrid_gpu_count == selected)
+                gpu_compute = 1;    /* every expert made it: use the fused path */
+        }
+        if (!result && gpu_compute && store->gpu) {
+            void *sg = coli_v4_layer_gpu(weights, "ffn.shared_experts.w1");
+            void *su = coli_v4_layer_gpu(weights, "ffn.shared_experts.w2");
+            void *sd = coli_v4_layer_gpu(weights, "ffn.shared_experts.w3");
+            int moe_ok = sg && su && sd;
+            void **gates = malloc((size_t)selected * sizeof(*gates));
+            void **ups = malloc((size_t)selected * sizeof(*ups));
+            void **downs = malloc((size_t)selected * sizeof(*downs));
+            if (!gates || !ups || !downs) result = -1;
+            if (!result) {
+                for (int i = 0; i < selected; i++) {
+                    gates[i] = views[i].gate.gpu;
+                    ups[i] = views[i].up.gpu;
+                    downs[i] = views[i].down.gpu;
+                }
+                if (moe_ok) {
+                    extern int dsv4_cuda_moe(
+                        void *const *gate, void *const *up, void *const *down,
+                        const float *weights, int count,
+                        void *sg, void *su, void *sd,
+                        float limit, float *y, const float *x);
+                    if (!dsv4_cuda_moe(gates, ups, downs, expert_weights,
+                        selected, sg, su, sd, config->swiglu_limit,
+                        expert_output, input)) moe_ok = 0;
+                }
+                if (!moe_ok) {
+                    extern int dsv4_cuda_expert_group(
+                        void *const *gate, void *const *up, void *const *down,
+                        const float *weights, int count, float limit,
+                        float *y, const float *x);
+                    if (!dsv4_cuda_expert_group(gates, ups, downs,
+                        expert_weights, selected, config->swiglu_limit,
+                        expert_output, input)) result = -1;
+                    if (!result)
+                        for (int i = 0; i < d; i++)
+                            expert_output[i] += shared_output[i];
+                }
+                if (!result)
+                    for (int i = 0; i < d; i++)
+                        output[i] = coli_bf16_round(expert_output[i]);
+            }
+            free(gates); free(ups); free(downs);
+        } else if (!result && hybrid_gpu_count > 0 && store->gpu) {
+            int gpu_n = hybrid_gpu_count, cpu_n = selected - hybrid_gpu_count;
+            void **gates = malloc((size_t)gpu_n * sizeof(*gates));
+            void **ups = malloc((size_t)gpu_n * sizeof(*ups));
+            void **downs = malloc((size_t)gpu_n * sizeof(*downs));
+            float *gpu_weights = malloc((size_t)gpu_n * sizeof(*gpu_weights));
+            float *gpu_sum = malloc((size_t)d * sizeof(*gpu_sum));
+            int gpu_ok = gates && ups && downs && gpu_weights && gpu_sum;
+            struct timespec h0, h1;
+            clock_gettime(CLOCK_MONOTONIC, &h0);
+            for (int current = 0; !result && current < selected; current++) {
+                int on_gpu = views[current].gate.gpu && views[current].up.gpu &&
+                             views[current].down.gpu;
+                if (on_gpu && gpu_ok) continue;   /* covered by the group below */
+                result = coli_v4_expert_forward_ref(
+                    expert_output, &views[current], input,
+                    expert_weights[current], config->swiglu_limit);
+                if (!result)
+                    for (int i = 0; i < d; i++) output[i] += expert_output[i];
+            }
+            if (!result && cpu_n > 0) {
+                clock_gettime(CLOCK_MONOTONIC, &h1);
+                double dt = (h1.tv_sec - h0.tv_sec) +
+                            (h1.tv_nsec - h0.tv_nsec) * 1e-9;
+                if (dt > 0.0)
+                    g_v4_hyb_host_bw = coli_v4_hybrid_ema(
+                        g_v4_hyb_host_bw, (double)cpu_n / dt);
+            }
+            if (hybrid_pending_drain) {
+                struct timespec d0, d1;
+                clock_gettime(CLOCK_MONOTONIC, &d0);
+                coli_v4_gpu_expert_drain(store);
+                clock_gettime(CLOCK_MONOTONIC, &d1);
+                hybrid_pending_drain = 0;
+                double waited = (d1.tv_sec - d0.tv_sec) +
+                                (d1.tv_nsec - d0.tv_nsec) * 1e-9;
+                double window = (d1.tv_sec - hybrid_fill_t0.tv_sec) +
+                                (d1.tv_nsec - hybrid_fill_t0.tv_nsec) * 1e-9;
+                if (hybrid_uploads > 0 && window > 0.0 &&
+                    waited > window * 0.05)
+                    g_v4_hyb_fill_bw = coli_v4_hybrid_ema(
+                        g_v4_hyb_fill_bw, (double)hybrid_uploads / window);
+            }
+            if (gpu_ok) {
+                int k = 0;
+                for (int i = 0; i < selected; i++)
+                    if (views[i].gate.gpu && views[i].up.gpu &&
+                        views[i].down.gpu) {
+                        gates[k] = views[i].gate.gpu;
+                        ups[k] = views[i].up.gpu;
+                        downs[k] = views[i].down.gpu;
+                        gpu_weights[k] = expert_weights[i];
+                        k++;
+                    }
+                extern int dsv4_cuda_expert_group(
+                    void *const *gate, void *const *up, void *const *down,
+                    const float *weights, int count, float limit,
+                    float *y, const float *x);
+                if (!dsv4_cuda_expert_group(gates, ups, downs, gpu_weights,
+                    gpu_n, config->swiglu_limit, gpu_sum, input)) gpu_ok = 0;
+            }
+            if (!gpu_ok)
+                for (int current = 0; !result && current < selected; current++) {
+                    if (!(views[current].gate.gpu && views[current].up.gpu &&
+                          views[current].down.gpu))
+                        continue;   /* already computed by the CPU loop above */
+                    result = coli_v4_expert_forward_ref(
+                        expert_output, &views[current], input,
+                        expert_weights[current], config->swiglu_limit);
+                    if (!result)
+                        for (int i = 0; i < d; i++)
+                            output[i] += expert_output[i];
+                }
+            if (!result) {
+                if (gpu_ok) {
+                    for (int i = 0; i < d; i++)
+                        output[i] = coli_bf16_round(
+                            output[i] + gpu_sum[i] + shared_output[i]);
+                    g_v4_hyb_gpu_n += (unsigned long long)gpu_n;
+                    g_v4_hyb_cpu_n += (unsigned long long)cpu_n;
+                } else {
+                    for (int i = 0; i < d; i++)
+                        output[i] = coli_bf16_round(output[i] + shared_output[i]);
+                }
+            }
+            free(gates); free(ups); free(downs);
+            free(gpu_weights); free(gpu_sum);
+        }
+        if (hybrid_pending_drain) coli_v4_gpu_expert_drain(store);
+        for (int current = 0; current < selected; current++)
+            coli_expert_release(store, &views[current]);
+        free(views);
+    } else
+#endif /* COLI_V4_GPU_TIER */
+    {
+        /* PURE CPU STREAMING PIPELINE:
+         * Overlap expert compute with NVMe loading of subsequent experts.
+         * As each loader finishes, immediately compute and release the expert,
+         * so CPU cores never sit idle waiting for all experts to load. */
         for (int current = 0; !result && current < selected; current++) {
             int slot = current % dual_loader_lanes();
             if (!loader_active[slot] ||
@@ -4990,22 +5240,6 @@ static int moe_token_pipeline(float *output,
             }
             loader_active[slot] = 0;
             if (jobs[slot].result) { result = -1; break; }
-            views[current] = jobs[slot].view;
-#ifdef COLI_V4_GPU_TIER
-            if (store->gpu) {
-                if (coli_v4_hybrid_enabled())
-                    /* peek only: uploads are decided once the token's full
-                     * miss count is known, by the q* pass below */
-                    coli_v4_gpu_expert_peek(store, &views[current]);
-                else
-                    coli_v4_gpu_expert_attach(store, &views[current]);
-            }
-#endif
-#ifdef COLI_V4_GPU_TIER
-            if (!views[current].gate.gpu || !views[current].up.gpu ||
-                !views[current].down.gpu)
-                gpu_compute = 0;
-#endif
 
             int next = current + dual_loader_lanes();
             if (next < selected) {
@@ -5020,6 +5254,14 @@ static int moe_token_pipeline(float *output,
                 else
                     loader_active[slot] = 1;
             }
+            if (!result) {
+                result = coli_v4_expert_forward_ref(
+                    expert_output, &jobs[slot].view, input,
+                    expert_weights[current], config->swiglu_limit);
+                if (!result)
+                    for (int i = 0; i < d; i++) output[i] += expert_output[i];
+            }
+            coli_expert_release(store, &jobs[slot].view);
         }
         for (int slot = 0; slot < dual_loader_lanes(); slot++)
             if (loader_active[slot]) {
@@ -5027,237 +5269,10 @@ static int moe_token_pipeline(float *output,
                 if (!jobs[slot].result)
                     coli_expert_release(store, &jobs[slot].view);
             }
-    }
-#ifdef COLI_V4_GPU_TIER
-    int hybrid_gpu_count = 0;
-    int hybrid_pending_drain = 0;   /* async DMA enqueued, not yet drained */
-    int hybrid_uploads = 0;
-    struct timespec hybrid_fill_t0 = {0, 0};
-    if (!result && coli_v4_hybrid_enabled() && store->gpu && !gpu_compute) {
-        /* q* pass: the peeks above established which of the token's experts
-         * are already resident. Upload only fill = q*(m) of the m misses;
-         * the rest stay host-side on purpose. Uploads are timed to feed the
-         * fill-bandwidth EMA. While the host bandwidth is still unmeasured,
-         * leave one expert on the CPU so it CAN be measured, otherwise
-         * fill == m forever and the policy never engages. */
-        int *missing = malloc((size_t)selected * sizeof(*missing));
-        if (missing) {
-            int miss_n = 0;
-            for (int i = 0; i < selected; i++)
-                if (!views[i].gate.gpu || !views[i].up.gpu ||
-                    !views[i].down.gpu)
-                    missing[miss_n++] = i;
-            int fill = coli_v4_hybrid_fill_count(
-                miss_n, g_v4_hyb_fill_bw, g_v4_hyb_host_bw);
-            if (g_v4_hyb_host_bw <= 0.0 && fill >= miss_n && miss_n > 1)
-                fill = miss_n - 1;
-            /* Fill uploads are ENQUEUED, not drained: the CPU subset below
-             * computes while the DMA is in flight — the very overlap the q*
-             * balance assumes. The fill branch is timed as a whole at the
-             * drain point; per-upload wall clocks here would only measure
-             * enqueue latency. */
-            /* Async needs a drainable stream. An older Windows DLL exports
-             * the refill but not the drain: probe once (a drain on an empty
-             * stream is a no-op) and stay fully synchronous there, so
-             * nothing is ever enqueued that could not be waited on. */
-            static int hybrid_async_ok = -1;
-            if (hybrid_async_ok < 0)
-                hybrid_async_ok = coli_v4_gpu_expert_drain(store) == 0;
-            clock_gettime(CLOCK_MONOTONIC, &hybrid_fill_t0);
-            for (int i = 0; i < fill; i++) {
-                int v = missing[i];
-                int attached = hybrid_async_ok
-                    ? coli_v4_gpu_expert_attach_async(store, &views[v])
-                    : coli_v4_gpu_expert_attach(store, &views[v]);
-                if (attached == 0 &&
-                    views[v].gate.gpu && views[v].up.gpu &&
-                    views[v].down.gpu) {
-                    hybrid_uploads++;
-                    hybrid_pending_drain = hybrid_async_ok;
-                    g_v4_hyb_upload_n++;
-                }
-            }
-            if (miss_n > fill)
-                g_v4_hyb_skip_n += (unsigned long long)(miss_n - fill);
-            free(missing);
-        }
-        for (int i = 0; i < selected; i++)
-            if (views[i].gate.gpu && views[i].up.gpu && views[i].down.gpu)
-                hybrid_gpu_count++;
-        if (hybrid_gpu_count == selected)
-            gpu_compute = 1;    /* every expert made it: use the fused path */
-    }
-    if (!result && gpu_compute && store->gpu) {
-        void *sg = coli_v4_layer_gpu(weights, "ffn.shared_experts.w1");
-        void *su = coli_v4_layer_gpu(weights, "ffn.shared_experts.w2");
-        void *sd = coli_v4_layer_gpu(weights, "ffn.shared_experts.w3");
-        int moe_ok = sg && su && sd;
-        void **gates = malloc((size_t)selected * sizeof(*gates));
-        void **ups = malloc((size_t)selected * sizeof(*ups));
-        void **downs = malloc((size_t)selected * sizeof(*downs));
-        if (!gates || !ups || !downs) result = -1;
-        if (!result) {
-            for (int i = 0; i < selected; i++) {
-                gates[i] = views[i].gate.gpu;
-                ups[i] = views[i].up.gpu;
-                downs[i] = views[i].down.gpu;
-            }
-            if (moe_ok) {
-                extern int dsv4_cuda_moe(
-                    void *const *gate, void *const *up, void *const *down,
-                    const float *weights, int count,
-                    void *sg, void *su, void *sd,
-                    float limit, float *y, const float *x);
-                if (!dsv4_cuda_moe(gates, ups, downs, expert_weights,
-                    selected, sg, su, sd, config->swiglu_limit,
-                    expert_output, input)) moe_ok = 0;
-            }
-            if (!moe_ok) {
-                extern int dsv4_cuda_expert_group(
-                    void *const *gate, void *const *up, void *const *down,
-                    const float *weights, int count, float limit,
-                    float *y, const float *x);
-                if (!dsv4_cuda_expert_group(gates, ups, downs,
-                    expert_weights, selected, config->swiglu_limit,
-                    expert_output, input)) result = -1;
-                if (!result)
-                    for (int i = 0; i < d; i++)
-                        expert_output[i] += shared_output[i];
-            }
-            if (!result)
-                for (int i = 0; i < d; i++)
-                    output[i] = coli_bf16_round(expert_output[i]);
-        }
-        free(gates); free(ups); free(downs);
-    } else if (!result && hybrid_gpu_count > 0 && store->gpu) {
-        /* Hybrid split: the GPU computes the resident subset as one weighted
-         * group while the CPU computes the rest; the two partial sums merge
-         * by addition, the same order-of-addition class that already
-         * separates the fused GPU path from the CPU reference. The CPU half
-         * is timed to feed the host-bandwidth EMA. A backend failure on the
-         * GPU half degrades that subset to the CPU loop instead of failing
-         * the token. */
-        int gpu_n = hybrid_gpu_count, cpu_n = selected - hybrid_gpu_count;
-        void **gates = malloc((size_t)gpu_n * sizeof(*gates));
-        void **ups = malloc((size_t)gpu_n * sizeof(*ups));
-        void **downs = malloc((size_t)gpu_n * sizeof(*downs));
-        float *gpu_weights = malloc((size_t)gpu_n * sizeof(*gpu_weights));
-        float *gpu_sum = malloc((size_t)d * sizeof(*gpu_sum));
-        int gpu_ok = gates && ups && downs && gpu_weights && gpu_sum;
-        /* CPU subset FIRST: it computes while the fill DMA enqueued by the
-         * q* pass is still in flight. The host bandwidth EMA is measured
-         * right here, under bus contention — which is exactly the number the
-         * balance needs. */
-        struct timespec h0, h1;
-        clock_gettime(CLOCK_MONOTONIC, &h0);
-        for (int current = 0; !result && current < selected; current++) {
-            int on_gpu = views[current].gate.gpu && views[current].up.gpu &&
-                         views[current].down.gpu;
-            if (on_gpu && gpu_ok) continue;   /* covered by the group below */
-            result = coli_v4_expert_forward_ref(
-                expert_output, &views[current], input,
-                expert_weights[current], config->swiglu_limit);
-            if (!result)
-                for (int i = 0; i < d; i++) output[i] += expert_output[i];
-        }
-        if (!result && cpu_n > 0) {
-            clock_gettime(CLOCK_MONOTONIC, &h1);
-            double dt = (h1.tv_sec - h0.tv_sec) +
-                        (h1.tv_nsec - h0.tv_nsec) * 1e-9;
-            if (dt > 0.0)
-                g_v4_hyb_host_bw = coli_v4_hybrid_ema(
-                    g_v4_hyb_host_bw, (double)cpu_n / dt);
-        }
-        /* Close the fill pipeline. The whole window (enqueue -> drained) is
-         * the fill branch's wall time; a sample is taken only when the drain
-         * actually waited, otherwise the transfers finished under the CPU
-         * work and the window would say nothing about the bus. */
-        if (hybrid_pending_drain) {
-            struct timespec d0, d1;
-            clock_gettime(CLOCK_MONOTONIC, &d0);
-            coli_v4_gpu_expert_drain(store);
-            clock_gettime(CLOCK_MONOTONIC, &d1);
-            hybrid_pending_drain = 0;
-            double waited = (d1.tv_sec - d0.tv_sec) +
-                            (d1.tv_nsec - d0.tv_nsec) * 1e-9;
-            double window = (d1.tv_sec - hybrid_fill_t0.tv_sec) +
-                            (d1.tv_nsec - hybrid_fill_t0.tv_nsec) * 1e-9;
-            if (hybrid_uploads > 0 && window > 0.0 &&
-                waited > window * 0.05)
-                g_v4_hyb_fill_bw = coli_v4_hybrid_ema(
-                    g_v4_hyb_fill_bw, (double)hybrid_uploads / window);
-        }
-        if (gpu_ok) {
-            int k = 0;
-            for (int i = 0; i < selected; i++)
-                if (views[i].gate.gpu && views[i].up.gpu &&
-                    views[i].down.gpu) {
-                    gates[k] = views[i].gate.gpu;
-                    ups[k] = views[i].up.gpu;
-                    downs[k] = views[i].down.gpu;
-                    gpu_weights[k] = expert_weights[i];
-                    k++;
-                }
-            extern int dsv4_cuda_expert_group(
-                void *const *gate, void *const *up, void *const *down,
-                const float *weights, int count, float limit,
-                float *y, const float *x);
-            if (!dsv4_cuda_expert_group(gates, ups, downs, gpu_weights,
-                gpu_n, config->swiglu_limit, gpu_sum, input)) gpu_ok = 0;
-        }
-        /* Backend failure on the group: the CPU loop above deliberately
-         * skipped these experts, so compute them here — degrade, don't drop
-         * (nor fail the token). */
-        if (!gpu_ok)
-            for (int current = 0; !result && current < selected; current++) {
-                if (!(views[current].gate.gpu && views[current].up.gpu &&
-                      views[current].down.gpu))
-                    continue;   /* already computed by the CPU loop above */
-                result = coli_v4_expert_forward_ref(
-                    expert_output, &views[current], input,
-                    expert_weights[current], config->swiglu_limit);
-                if (!result)
-                    for (int i = 0; i < d; i++)
-                        output[i] += expert_output[i];
-            }
-        if (!result) {
-            if (gpu_ok) {
-                for (int i = 0; i < d; i++)
-                    output[i] = coli_bf16_round(
-                        output[i] + gpu_sum[i] + shared_output[i]);
-                g_v4_hyb_gpu_n += (unsigned long long)gpu_n;
-                g_v4_hyb_cpu_n += (unsigned long long)cpu_n;
-            } else {
-                for (int i = 0; i < d; i++)
-                    output[i] = coli_bf16_round(output[i] + shared_output[i]);
-            }
-        }
-        free(gates); free(ups); free(downs);
-        free(gpu_weights); free(gpu_sum);
-    } else
-#endif
-    {
-        for (int current = 0; !result && current < selected; current++) {
-            if (!result) result = coli_v4_expert_forward_ref(
-                expert_output, &views[current], input,
-                expert_weights[current], config->swiglu_limit);
-            if (!result)
-                for (int i = 0; i < d; i++) output[i] += expert_output[i];
-        }
         if (!result)
             for (int i = 0; i < d; i++)
                 output[i] = coli_bf16_round(output[i] + shared_output[i]);
     }
-#ifdef COLI_V4_GPU_TIER
-    /* If an error or the fused path skipped the hybrid branch while async
-     * fill DMA was still enqueued, drain before releasing the host slabs the
-     * copies read from. (The fused kernels sync internally, so this is only
-     * ever a wait on already-finished work — never a correctness gamble.) */
-    if (hybrid_pending_drain) coli_v4_gpu_expert_drain(store);
-#endif
-    for (int current = 0; current < selected; current++)
-        coli_expert_release(store, &views[current]);
-    free(views);
 #else
     for (int current = 0; current < selected && loader_active; current++) {
         if (profiled_expert_load_finish(&loader) != 0) {
@@ -5298,8 +5313,9 @@ static int moe_token_pipeline(float *output,
             coli_expert_release(store, &job.view);
     }
 #endif
-    free(shared_output); free(expert_output); free(expert_weights);
-    free(expert_ids); free(indices); free(route_weights); free(gate);
+    if (d > 4096) { free(shared_output); free(expert_output); }
+    if (topk > 32) { free(expert_weights); free(expert_ids); free(indices); free(route_weights); }
+    free(gate);
 #ifdef COLI_V4_EXPERIMENTAL_BLOCK_OTHER_PROFILE
     coli_v4_block_profile_add(COLI_V4_BLOCK_PROFILE_MOE_TOTAL,
                               coli_v4_block_profile_now() - profile_moe_began);
@@ -8173,6 +8189,40 @@ static int v4_pread_full_try(int fd, void *destination, size_t length,
     return 0;
 }
 
+#ifdef _WIN32
+static __thread int tls_dfds[512] = { [0 ... 511] = -2 };
+static int v4_get_thread_dfd(int global_dfd, int shard) {
+    if (global_dfd < 0) return -1;
+    if (shard < 0 || shard >= 512) return global_dfd;
+    if (tls_dfds[shard] == -2) {
+        intptr_t osfh = _get_osfhandle(global_dfd);
+        if (osfh != -1 && osfh != -2) {
+            HANDLE hNew = ReOpenFile((HANDLE)osfh, GENERIC_READ,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                     FILE_FLAG_NO_BUFFERING);
+            if (hNew != INVALID_HANDLE_VALUE) {
+                int new_fd = _open_osfhandle((intptr_t)hNew, _O_RDONLY | _O_BINARY);
+                if (new_fd >= 0) {
+                    tls_dfds[shard] = new_fd;
+                } else {
+                    CloseHandle(hNew);
+                    tls_dfds[shard] = global_dfd;
+                }
+            } else {
+                tls_dfds[shard] = global_dfd;
+            }
+        } else {
+            tls_dfds[shard] = global_dfd;
+        }
+    }
+    return tls_dfds[shard];
+}
+#else
+static inline int v4_get_thread_dfd(int global_dfd, int shard) {
+    (void)shard; return global_dfd;
+}
+#endif
+
 static int v4_read_direct_window(const V4ExpertStoreState *state, int shard,
                                  int rep, unsigned char *slab, uint64_t offset,
                                  size_t length, size_t destination_offset) {
@@ -8180,6 +8230,7 @@ static int v4_read_direct_window(const V4ExpertStoreState *state, int shard,
     /* DUAL-SSD: prefer the routed replica's O_DIRECT twin. */
     int dfd = rep ? state->index->mdfds[rep - 1][shard] : state->index->dfds[shard];
     if (dfd < 0) return -1;
+    if (!rep) dfd = v4_get_thread_dfd(dfd, shard);
     int fd = rep ? state->index->mfds[rep - 1][shard] : state->index->fds[shard];
     if (fd < 0) fd = state->index->fds[shard];
     const uint64_t alignment = 4096;
@@ -8194,11 +8245,31 @@ static int v4_read_direct_window(const V4ExpertStoreState *state, int shard,
     uint64_t available = file_bytes - base;
     if ((uint64_t)direct_length > available)
         direct_length = (size_t)(available & ~(alignment - 1));
-    if (direct_length && v4_pread_full_try(dfd, slab, direct_length, base)) return -1;
-    if (direct_length < wanted && v4_pread_full_try(
-            fd, slab + direct_length,
-            wanted - direct_length, base + direct_length)) return -1;
-    memmove(slab + destination_offset, slab + pad, length);
+    unsigned char *target = slab + destination_offset;
+    if ((destination_offset & (alignment - 1)) == 0) {
+        if (direct_length && v4_pread_full_try(dfd, target, direct_length, base)) return -1;
+        if (direct_length < wanted && v4_pread_full_try(
+                fd, target + direct_length,
+                wanted - direct_length, base + direct_length)) return -1;
+        if (pad > 0) memmove(target, target + pad, length);
+    } else {
+        static __thread unsigned char *bounce_buf = NULL;
+        static __thread size_t bounce_cap = 0;
+        if (bounce_cap < direct_length) {
+            size_t new_cap = (direct_length + 0xFFFFF) & ~0xFFFFFu;
+            compat_aligned_free(bounce_buf);
+            if (posix_memalign((void **)&bounce_buf, (size_t)alignment, new_cap) != 0) {
+                bounce_buf = NULL; bounce_cap = 0;
+                return -1;
+            }
+            bounce_cap = new_cap;
+        }
+        if (direct_length && v4_pread_full_try(dfd, bounce_buf, direct_length, base)) return -1;
+        if (direct_length < wanted && v4_pread_full_try(
+                fd, bounce_buf + direct_length,
+                wanted - direct_length, base + direct_length)) return -1;
+        memcpy(target, bounce_buf + pad, length);
+    }
     __atomic_fetch_add(&g_v4_mir_bytes[rep], (uint64_t)length, __ATOMIC_RELAXED);
     __atomic_fetch_add(&g_v4_mir_nread[rep], 1, __ATOMIC_RELAXED);
     return 0;
@@ -8208,28 +8279,58 @@ static int v4_read_expert_record(V4ExpertStoreState *state,
                                  const V4ExpertRecord *record,
                                  V4ExpertSlot *slot, int rep) {
     if (record->per_matrix) {
-        int direct_available = slot->aligned_slab &&
-            coli_st_streaming_direct_available_rep(state->index, record->m_scale_shard[0], rep);
-        if (direct_available)
-            __atomic_fetch_add(&v4_direct_fallbacks, UINT64_C(1),
-                               __ATOMIC_RELAXED);
         uint64_t scale_cursor = 0;
         for (int matrix = 0; matrix < V4_MATRIX_COUNT; matrix++) {
-            if (coli_st_read_at_rep(state->index, record->m_scale_shard[matrix], rep,
-                                    record->m_scale_offset[matrix],
-                                    (size_t)record->m_scale_bytes[matrix],
-                                    slot->slab + scale_cursor) != 0)
-                return -1;
+            int s_shard = record->m_scale_shard[matrix];
+            uint64_t s_off = record->m_scale_offset[matrix];
+            size_t s_len = (size_t)record->m_scale_bytes[matrix];
+            int s_direct = slot->aligned_slab &&
+                coli_st_streaming_direct_available_rep(state->index, s_shard, rep) &&
+                !v4_read_direct_window(state, s_shard, rep, slot->slab, s_off, s_len, (size_t)scale_cursor);
+            if (s_direct) {
+                __atomic_fetch_add(&v4_direct_payload_bytes, (uint64_t)s_len, __ATOMIC_RELAXED);
+            } else {
+                if (coli_st_read_at_rep(state->index, s_shard, rep, s_off, s_len,
+                                        slot->slab + scale_cursor) != 0)
+                    return -1;
+            }
             scale_cursor += record->m_scale_bytes[matrix];
         }
         uint64_t weight_cursor = scale_cursor;
-        for (int matrix = 0; matrix < V4_MATRIX_COUNT; matrix++) {
-            if (coli_st_read_at_rep(state->index, record->m_weight_shard[matrix], rep,
-                                    record->m_weight_offset[matrix],
-                                    (size_t)record->m_weight_bytes[matrix],
-                                    slot->slab + weight_cursor) != 0)
-                return -1;
-            weight_cursor += record->m_weight_bytes[matrix];
+        int direct_available = slot->aligned_slab;
+        int m = 0;
+        while (m < V4_MATRIX_COUNT) {
+            int shard = record->m_weight_shard[m];
+            uint64_t off = record->m_weight_offset[m];
+            size_t len = (size_t)record->m_weight_bytes[m];
+            size_t dest_off = (size_t)weight_cursor;
+            int next = m + 1;
+            while (next < V4_MATRIX_COUNT &&
+                   record->m_weight_shard[next] == shard &&
+                   record->m_weight_offset[next] == off + len) {
+                len += (size_t)record->m_weight_bytes[next];
+                next++;
+            }
+            int d_ok = direct_available &&
+                coli_st_streaming_direct_available_rep(state->index, shard, rep) &&
+                !v4_read_direct_window(state, shard, rep, slot->slab, off, len, dest_off);
+            if (d_ok) {
+                __atomic_fetch_add(&v4_direct_reads, UINT64_C(1), __ATOMIC_RELAXED);
+                __atomic_fetch_add(&v4_direct_payload_bytes, (uint64_t)len, __ATOMIC_RELAXED);
+                weight_cursor += len;
+            } else {
+                if (direct_available && coli_st_streaming_direct_available_rep(state->index, shard, rep))
+                    __atomic_fetch_add(&v4_direct_fallbacks, UINT64_C(1), __ATOMIC_RELAXED);
+                for (int sub = m; sub < next; sub++) {
+                    if (coli_st_read_at_rep(state->index, record->m_weight_shard[sub], rep,
+                                            record->m_weight_offset[sub],
+                                            (size_t)record->m_weight_bytes[sub],
+                                            slot->slab + weight_cursor) != 0)
+                        return -1;
+                    weight_cursor += record->m_weight_bytes[sub];
+                }
+            }
+            m = next;
         }
         return 0;
     }
@@ -8256,6 +8357,15 @@ static int v4_read_expert_record(V4ExpertStoreState *state,
         __atomic_fetch_add(&v4_direct_reads, UINT64_C(1), __ATOMIC_RELAXED);
         __atomic_fetch_add(&v4_direct_payload_bytes, record->weight_bytes,
                            __ATOMIC_RELAXED);
+        int scale_direct = direct_available &&
+            coli_st_streaming_direct_available_rep(state->index, record->scale_shard, rep) &&
+            !v4_read_direct_window(state, record->scale_shard, rep, slot->slab,
+                                   record->scale_offset, (size_t)record->scale_bytes, 0);
+        if (scale_direct) {
+            __atomic_fetch_add(&v4_direct_payload_bytes, record->scale_bytes,
+                               __ATOMIC_RELAXED);
+            return 0;
+        }
         return coli_st_read_at_rep(state->index, record->scale_shard, rep,
                                    record->scale_offset,
                                    (size_t)record->scale_bytes, slot->slab);
@@ -9019,11 +9129,13 @@ int coli_v4_expert_forward_ref(float *output, const ColiExpertView *expert,
         expert->down.rows != expert->gate.columns) return -1;
     size_t intermediate = (size_t)expert->gate.rows;
     size_t output_size = (size_t)expert->down.rows;
-    float *gate = malloc(intermediate * sizeof(*gate));
-    float *up = malloc(intermediate * sizeof(*up));
-    float *activated = malloc(intermediate * sizeof(*activated));
+    float gate_buf[4096], up_buf[4096], act_buf[4096];
+    float *gate = intermediate <= 4096 ? gate_buf : malloc(intermediate * sizeof(*gate));
+    float *up = intermediate <= 4096 ? up_buf : malloc(intermediate * sizeof(*up));
+    float *activated = intermediate <= 4096 ? act_buf : malloc(intermediate * sizeof(*activated));
     if (!gate || !up || !activated) {
-        free(activated); free(up); free(gate); return -1;
+        if (intermediate > 4096) { free(activated); free(up); free(gate); }
+        return -1;
     }
     int result = coli_fp4_dual_matvec_ref(
         gate, up, &expert->gate, &expert->up, input);
@@ -9039,7 +9151,7 @@ int coli_v4_expert_forward_ref(float *output, const ColiExpertView *expert,
         result = coli_fp4_matvec_ref(output, &expert->down, activated);
     }
     if (!result) coli_bf16_round_array(output, output_size);
-    free(activated); free(up); free(gate);
+    if (intermediate > 4096) { free(activated); free(up); free(gate); }
     return result ? -1 : 0;
 }
 
@@ -9059,11 +9171,13 @@ int coli_v4_shared_expert_forward_ref(float *output,
         down_weight->rows != gate_weight->columns) return -1;
     size_t intermediate = (size_t)gate_weight->rows;
     size_t output_size = (size_t)down_weight->rows;
-    float *gate = malloc(intermediate * sizeof(*gate));
-    float *up = malloc(intermediate * sizeof(*up));
-    float *activated = malloc(intermediate * sizeof(*activated));
+    float gate_buf[4096], up_buf[4096], act_buf[4096];
+    float *gate = intermediate <= 4096 ? gate_buf : malloc(intermediate * sizeof(*gate));
+    float *up = intermediate <= 4096 ? up_buf : malloc(intermediate * sizeof(*up));
+    float *activated = intermediate <= 4096 ? act_buf : malloc(intermediate * sizeof(*activated));
     if (!gate || !up || !activated) {
-        free(activated); free(up); free(gate); return -1;
+        if (intermediate > 4096) { free(activated); free(up); free(gate); }
+        return -1;
     }
     int result = coli_fp8_dual_matvec_ref(
         gate, up, gate_weight, up_weight, input);
@@ -9078,7 +9192,7 @@ int coli_v4_shared_expert_forward_ref(float *output,
         result = coli_fp8_matvec_ref(output, down_weight, activated);
     }
     if (!result) coli_bf16_round_array(output, output_size);
-    free(activated); free(up); free(gate);
+    if (intermediate > 4096) { free(activated); free(up); free(gate); }
     return result ? -1 : 0;
 }
 /* ---- end include deepseek_v4_expert_dual.c ---- */
@@ -9102,11 +9216,13 @@ int coli_v4_expert_forward_ref(float *output, const ColiExpertView *expert,
     if (!output || !input || swiglu_limit < 0.0f) return -1;
     size_t intermediate = (size_t)expert->gate.rows;
     size_t output_size = (size_t)expert->down.rows;
-    float *gate = malloc(intermediate * sizeof(*gate));
-    float *up = malloc(intermediate * sizeof(*up));
-    float *activated = malloc(intermediate * sizeof(*activated));
+    float gate_buf[4096], up_buf[4096], act_buf[4096];
+    float *gate = intermediate <= 4096 ? gate_buf : malloc(intermediate * sizeof(*gate));
+    float *up = intermediate <= 4096 ? up_buf : malloc(intermediate * sizeof(*up));
+    float *activated = intermediate <= 4096 ? act_buf : malloc(intermediate * sizeof(*activated));
     if (!gate || !up || !activated) {
-        free(activated); free(up); free(gate); return -1;
+        if (intermediate > 4096) { free(activated); free(up); free(gate); }
+        return -1;
     }
     int result = coli_fp4_dual_matvec_rows16_v10(
         gate, up, &expert->gate, &expert->up, input);
@@ -9123,7 +9239,7 @@ int coli_v4_expert_forward_ref(float *output, const ColiExpertView *expert,
             output, &expert->down, activated);
     }
     if (!result) coli_bf16_round_array(output, output_size);
-    free(activated); free(up); free(gate);
+    if (intermediate > 4096) { free(activated); free(up); free(gate); }
     return result ? -1 : 0;
 #endif
 }
@@ -14143,22 +14259,27 @@ static int v4_serve_main(void) {
  * rationale omp_tune.h records for the spin-wait half of the GLM tuning: a
  * busy team steals cores from the I/O pool). An explicit OMP_NUM_THREADS or
  * COLI_NO_OMP_TUNE=1 wins, exactly like the other engines' tuning. */
+#include "omp_tune.h"
 static int v4_omp_reserve_loader_cpus(void) {
     if (getenv("COLI_NO_OMP_TUNE")) return 0; /* family-wide kill-switch */
     if (getenv("OMP_NUM_THREADS")) return 0;  /* the user already chose */
     int logical = omp_get_max_threads();
-    int team = logical - COLI_V4_EXPERT_LOADER_COUNT;
+    int phys = coli_physical_cores();
+    int team = (phys > 0 && phys < logical) ? phys : (logical - COLI_V4_EXPERT_LOADER_COUNT);
     if (team < 2) return 0; /* tiny machine: leave the OpenMP default alone */
     omp_set_num_threads(team);
-    fprintf(stderr, "[OMP] deepseek-v4: %d compute threads (%d logical CPUs "
-                    "minus %d expert-loader workers); OMP_NUM_THREADS=<n> "
+    fprintf(stderr, "[OMP] deepseek-v4: %d compute threads (%d logical CPUs, %d physical cores, "
+                    "%d expert-loader workers); OMP_NUM_THREADS=<n> "
                     "overrides, COLI_NO_OMP_TUNE=1 disables\n",
-            team, logical, COLI_V4_EXPERT_LOADER_COUNT);
+            team, logical, phys, COLI_V4_EXPERT_LOADER_COUNT);
     return 1;
 }
 #endif
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
+    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+#endif
 #ifdef _OPENMP
     if (!v4_omp_reserve_loader_cpus())
         fprintf(stderr, "[OMP] deepseek-v4: effective team size %d\n",
