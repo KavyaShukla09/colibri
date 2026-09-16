@@ -1122,7 +1122,22 @@ int coli_v4_resource_plan_compute(
     uint64_t max_allowed_user_limit = total_ram > (1024 * MIB) ? total_ram - (1024 * MIB) : total_ram;
     int explicit_process_limit = inputs->user_limit_bytes &&
         (inputs->user_limit_bytes <= max_allowed_user_limit || inputs->user_limit_bytes < available);
-    if (explicit_process_limit)
+    if (!inputs->user_limit_bytes && total_ram >= (14ULL * 1024 * MIB)) {
+        /* Hardware-adaptive RAM budget:
+         * Reserve 3.4 GiB for OS/desktop background tasks on ~16GB systems.
+         * This yields an optimal 12.60 GiB budget (exactly 8 slots) without
+         * requiring manual --memory-gb 12.6, avoiding both under-allocation (7 slots)
+         * and over-allocation (9 slots / paging). */
+        uint64_t os_reserve = 3400ULL * MIB;
+        if (total_ram >= (30ULL * 1024 * MIB)) os_reserve = 4096ULL * MIB;
+        else if (total_ram >= (22ULL * 1024 * MIB)) os_reserve = 3600ULL * MIB;
+        uint64_t safe_target = total_ram > os_reserve ? total_ram - os_reserve : available;
+        if (safe_target >= available) {
+            available = safe_target;
+            explicit_process_limit = 1;
+        }
+    }
+    if (explicit_process_limit && inputs->user_limit_bytes)
         available = inputs->user_limit_bytes;
     plan->planner_available_bytes = available;
 

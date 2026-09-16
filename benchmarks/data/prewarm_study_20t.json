@@ -1,0 +1,24 @@
+{
+  "status": "SUCCESS",
+  "returncode": 0,
+  "wall_sec": 168.65,
+  "tokens_requested": 20,
+  "mem_before": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 9.943252563476562,
+    "used_phys_gb": 5.915203094482422,
+    "mem_load_pct": 37,
+    "total_commit_gb": 18.156394958496094,
+    "avail_commit_gb": 12.037586212158203
+  },
+  "mem_after": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 12.471004486083984,
+    "used_phys_gb": 3.387451171875,
+    "mem_load_pct": 21,
+    "total_commit_gb": 18.209903717041016,
+    "avail_commit_gb": 12.22262191772461
+  },
+  "stdout": "\n# Transformer Neural Network: Detailed Explanation\n\n## 1. OVERVIEW\n\nA transformer is a\nTUNE decode: 20 tokens in 162.863s\n",
+  "stderr": "[OMP] deepseek-v4: effective team size 4\nram_tiers available=12.60GiB dense=resident(6.23GiB) target_slots=8 target_cache=4.28GiB head=resident-bf16 projected=12.34GiB\nv4_open index=0.29s plan=0.00s (index built once, reused by plan/inventory/head)\nv4_ssd_io mode=direct-aligned fallback=buffered-pread\nv4_autopin history=D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage selections=173160\nv4_hot_policy pin_slots_per_layer=2 repin_interval=6 mode=resident-ram rows16=hot-pins\nv4_autopin warmed=86 requested=86 bytes=1.071GiB time=1.551s\n[DSV4 CUDA] no usable backend DLL (coli_cuda_dsv4_dg.dll / coli_cuda_dsv4.dll); GPU tier disabled (CPU path remains active).\nv4_gpu warning=backend-unavailable; continuing-CPU\nv4_cli mode=chat memory=limited target_only=1\nv4_dense_resident layers=43 bytes=6.226GiB\nv4_tokens prompt=26 generated=20 total=46 expert_requests=7219 hits=2130 misses=5089 hit_rate=29.505 bytes=68036591616 target_only=1\ngenerated_text=\n# Transformer Neural Network: Detailed Explanation\n\n## 1. OVERVIEW\n\nA transformer is a\ntiming time_to_first_token=76.390s after_first=86.468s\n[STATS] 180465 selections across 4606 distinct experts -> D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage\nv4_rows16 packed_slots=88\nv4_direct reads=6455 flock_reads=0 fallbacks=0 payload_bytes=69186355200\n"
+}

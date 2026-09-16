@@ -1,0 +1,24 @@
+{
+  "status": "SUCCESS",
+  "returncode": 0,
+  "wall_sec": 299.22,
+  "tokens_requested": 50,
+  "mem_before": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 9.618988037109375,
+    "used_phys_gb": 6.239467620849609,
+    "mem_load_pct": 39,
+    "total_commit_gb": 18.546680450439453,
+    "avail_commit_gb": 10.502723693847656
+  },
+  "mem_after": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 11.95196533203125,
+    "used_phys_gb": 3.9064903259277344,
+    "mem_load_pct": 24,
+    "total_commit_gb": 18.546680450439453,
+    "avail_commit_gb": 12.003650665283203
+  },
+  "stdout": "To understand how a transformer neural network works, we need to build it up from its core components: the attention mechanism, the feed-forward layers, and how backpropagation flows through the entire architecture. Let me explain each in detail.\n\n---\n\n## \nTUNE decode: 50 tokens in 295.636s\n",
+  "stderr": "[OMP] deepseek-v4: effective team size 4\nram_tiers available=12.00GiB dense=resident(6.23GiB) target_slots=7 target_cache=3.75GiB head=resident-bf16 projected=11.80GiB\nv4_open index=0.15s plan=0.00s (index built once, reused by plan/inventory/head)\nv4_ssd_io mode=direct-aligned fallback=buffered-pread\nv4_autopin history=D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage selections=83935\nv4_hot_policy pin_slots_per_layer=1 repin_interval=6 mode=resident-ram rows16=hot-pins\n[DSV4 CUDA] no usable backend DLL (coli_cuda_dsv4_dg.dll / coli_cuda_dsv4.dll); GPU tier disabled (CPU path remains active).\nv4_gpu warning=backend-unavailable; continuing-CPU\nv4_cli mode=chat memory=limited target_only=1\nv4_dense_resident layers=43 bytes=6.226GiB\nv4_tokens prompt=26 generated=50 total=76 expert_requests=14951 hits=4101 misses=10850 hit_rate=27.430 bytes=145057382400 target_only=1\ngenerated_text=To understand how a transformer neural network works, we need to build it up from its core components: the attention mechanism, the feed-forward layers, and how backpropagation flows through the entire architecture. Let me explain each in detail.\n\n---\n\n## \ntiming time_to_first_token=71.458s after_first=224.170s\n[STATS] 98886 selections across 4424 distinct experts -> D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage\nv4_rows16 packed_slots=91\nv4_direct reads=13517 flock_reads=0 fallbacks=0 payload_bytes=145057382400\n"
+}

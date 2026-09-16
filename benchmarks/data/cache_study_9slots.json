@@ -1,0 +1,24 @@
+{
+  "status": "SUCCESS",
+  "returncode": 0,
+  "wall_sec": 330.61,
+  "tokens_requested": 50,
+  "mem_before": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 11.961231231689453,
+    "used_phys_gb": 3.8972244262695312,
+    "mem_load_pct": 24,
+    "total_commit_gb": 18.546680450439453,
+    "avail_commit_gb": 12.01877212524414
+  },
+  "mem_after": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 12.468643188476562,
+    "used_phys_gb": 3.389812469482422,
+    "mem_load_pct": 21,
+    "total_commit_gb": 18.61911392211914,
+    "avail_commit_gb": 12.19063949584961
+  },
+  "stdout": "\n# Transformer Neural Network: Detailed Explanation\n\n## 1. OVERVIEW\n\nA transformer is a neural architecture designed primarily for sequence processing, introduced by Vaswani et al. (2017) in the paper \"Attention Is All You Need.\"\nTUNE decode: 50 tokens in 326.581s\n",
+  "stderr": "[OMP] deepseek-v4: effective team size 4\nram_tiers available=13.20GiB dense=resident(6.23GiB) target_slots=9 target_cache=4.82GiB head=resident-bf16 projected=12.87GiB\nv4_open index=0.18s plan=0.00s (index built once, reused by plan/inventory/head)\nv4_ssd_io mode=direct-aligned fallback=buffered-pread\nv4_autopin history=D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage selections=128804\nv4_hot_policy pin_slots_per_layer=3 repin_interval=6 mode=resident-ram rows16=hot-pins\n[DSV4 CUDA] no usable backend DLL (coli_cuda_dsv4_dg.dll / coli_cuda_dsv4.dll); GPU tier disabled (CPU path remains active).\nv4_gpu warning=backend-unavailable; continuing-CPU\nv4_cli mode=chat memory=limited target_only=1\nv4_dense_resident layers=43 bytes=6.226GiB\nv4_tokens prompt=26 generated=50 total=76 expert_requests=14959 hits=5223 misses=9736 hit_rate=34.915 bytes=130163933184 target_only=1\ngenerated_text=\n# Transformer Neural Network: Detailed Explanation\n\n## 1. OVERVIEW\n\nA transformer is a neural architecture designed primarily for sequence processing, introduced by Vaswani et al. (2017) in the paper \"Attention Is All You Need.\"\ntiming time_to_first_token=82.504s after_first=244.064s\n[STATS] 143763 selections across 4606 distinct experts -> D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage\nv4_rows16 packed_slots=201\nv4_direct reads=12200 flock_reads=0 fallbacks=0 payload_bytes=130163933184\n"
+}

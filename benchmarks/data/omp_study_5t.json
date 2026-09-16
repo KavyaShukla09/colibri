@@ -1,0 +1,24 @@
+{
+  "status": "SUCCESS",
+  "returncode": 0,
+  "wall_sec": 183.39,
+  "tokens_requested": 20,
+  "mem_before": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 11.761970520019531,
+    "used_phys_gb": 4.096485137939453,
+    "mem_load_pct": 25,
+    "total_commit_gb": 18.650020599365234,
+    "avail_commit_gb": 11.82065200805664
+  },
+  "mem_after": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 12.25979232788086,
+    "used_phys_gb": 3.598663330078125,
+    "mem_load_pct": 22,
+    "total_commit_gb": 19.661701202392578,
+    "avail_commit_gb": 13.074386596679688
+  },
+  "stdout": "\n# Transformer Neural Network: Detailed Explanation\n\n## 1. OVERVIEW\n\nA transformer is a\nTUNE decode: 20 tokens in 179.696s\n",
+  "stderr": "[OMP] deepseek-v4: effective team size 5\nram_tiers available=12.60GiB dense=resident(6.23GiB) target_slots=8 target_cache=4.28GiB head=resident-bf16 projected=12.34GiB\nv4_open index=0.16s plan=0.00s (index built once, reused by plan/inventory/head)\nv4_ssd_io mode=direct-aligned fallback=buffered-pread\nv4_autopin history=D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage selections=150982\nv4_hot_policy pin_slots_per_layer=2 repin_interval=6 mode=resident-ram rows16=hot-pins\n[DSV4 CUDA] no usable backend DLL (coli_cuda_dsv4_dg.dll / coli_cuda_dsv4.dll); GPU tier disabled (CPU path remains active).\nv4_gpu warning=backend-unavailable; continuing-CPU\nv4_cli mode=chat memory=limited target_only=1\nv4_dense_resident layers=43 bytes=6.226GiB\nv4_tokens prompt=26 generated=20 total=46 expert_requests=7219 hits=2022 misses=5197 hit_rate=28.009 bytes=69480480768 target_only=1\ngenerated_text=\n# Transformer Neural Network: Detailed Explanation\n\n## 1. OVERVIEW\n\nA transformer is a\ntiming time_to_first_token=78.276s after_first=101.417s\n[STATS] 158201 selections across 4606 distinct experts -> D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage\nv4_rows16 packed_slots=120\nv4_direct reads=6480 flock_reads=0 fallbacks=0 payload_bytes=69480480768\n"
+}

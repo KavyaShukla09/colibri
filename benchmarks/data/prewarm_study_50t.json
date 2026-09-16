@@ -1,0 +1,24 @@
+{
+  "status": "SUCCESS",
+  "returncode": 0,
+  "wall_sec": 318.46,
+  "tokens_requested": 50,
+  "mem_before": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 11.695404052734375,
+    "used_phys_gb": 4.163051605224609,
+    "mem_load_pct": 26,
+    "total_commit_gb": 18.209461212158203,
+    "avail_commit_gb": 11.701591491699219
+  },
+  "mem_after": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 12.072189331054688,
+    "used_phys_gb": 3.786266326904297,
+    "mem_load_pct": 23,
+    "total_commit_gb": 18.206317901611328,
+    "avail_commit_gb": 11.87777328491211
+  },
+  "stdout": "\n# Transformer Neural Network: Detailed Explanation\n\n## 1. OVERVIEW\n\nA transformer is a neural architecture designed primarily for sequence processing, introduced by Vaswani et al. (2017) in the paper \"Attention Is All You Need.\"\nTUNE decode: 50 tokens in 312.427s\n",
+  "stderr": "[OMP] deepseek-v4: effective team size 4\nram_tiers available=12.60GiB dense=resident(6.23GiB) target_slots=8 target_cache=4.28GiB head=resident-bf16 projected=12.34GiB\nv4_open index=0.22s plan=0.00s (index built once, reused by plan/inventory/head)\nv4_ssd_io mode=direct-aligned fallback=buffered-pread\nv4_autopin history=D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage selections=180465\nv4_hot_policy pin_slots_per_layer=2 repin_interval=6 mode=resident-ram rows16=hot-pins\nv4_autopin warmed=86 requested=86 bytes=1.071GiB time=1.327s\n[DSV4 CUDA] no usable backend DLL (coli_cuda_dsv4_dg.dll / coli_cuda_dsv4.dll); GPU tier disabled (CPU path remains active).\nv4_gpu warning=backend-unavailable; continuing-CPU\nv4_cli mode=chat memory=limited target_only=1\nv4_dense_resident layers=43 bytes=6.226GiB\nv4_tokens prompt=26 generated=50 total=76 expert_requests=14959 hits=5043 misses=9916 hit_rate=33.712 bytes=132570415104 target_only=1\ngenerated_text=\n# Transformer Neural Network: Detailed Explanation\n\n## 1. OVERVIEW\n\nA transformer is a neural architecture designed primarily for sequence processing, introduced by Vaswani et al. (2017) in the paper \"Attention Is All You Need.\"\ntiming time_to_first_token=90.718s after_first=221.683s\n[STATS] 195510 selections across 4606 distinct experts -> D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage\nv4_rows16 packed_slots=88\nv4_direct reads=12508 flock_reads=0 fallbacks=0 payload_bytes=133720178688\n"
+}

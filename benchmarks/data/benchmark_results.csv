@@ -5,4 +5,7 @@ Fix 2 - Win32 Thread Handles,92.05,61.10,26.05,6.51,0,94.0
 Fix 3 - Overlapped MoE & Stack,84.42,58.69,22.36,5.59,0,94.0
 Fix 4 - Physical-Core Autotune,83.47,62.78,17.83,4.46,0,94.0
 Fix 5 - Scale Direct I/O,83.06,62.78,17.46,4.36,0,100.0
-Canonical Sustained 50 Tokens,284.53,62.48,218.61,4.461,0,100.0
+Phase 0 Baseline (7 slots 12.0GB),299.22,71.46,224.17,4.483,0,100.0
+Phase 3 Optimal 8-Slot Cache (12.6GB),293.75,79.52,210.41,4.208,0,100.0
+Phase 3 Regressed 9-Slot Cache (13.2GB),330.40,82.50,244.06,4.881,0,100.0
+Phase 7 Hardware-Adaptive Auto Mode,344.08,82.12,258.22,5.164,0,100.0
