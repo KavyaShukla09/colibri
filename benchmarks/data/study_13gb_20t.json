@@ -1,0 +1,24 @@
+{
+  "status": "SUCCESS",
+  "returncode": 0,
+  "wall_sec": 199.81,
+  "tokens_requested": 20,
+  "mem_before": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 11.308414459228516,
+    "used_phys_gb": 4.550041198730469,
+    "mem_load_pct": 28,
+    "total_commit_gb": 18.434555053710938,
+    "avail_commit_gb": 11.876853942871094
+  },
+  "mem_after": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 12.504074096679688,
+    "used_phys_gb": 3.354381561279297,
+    "mem_load_pct": 21,
+    "total_commit_gb": 18.96251678466797,
+    "avail_commit_gb": 12.214134216308594
+  },
+  "stdout": "\n# Transformer Neural Network: Detailed Explanation\n\n## 1. OVERVIEW\n\nA transformer is a\nTUNE decode: 20 tokens in 195.285s\n",
+  "stderr": "[OMP] deepseek-v4: effective team size 4\nram_tiers available=13.00GiB dense=resident(6.23GiB) target_slots=9 target_cache=4.82GiB head=resident-bf16 projected=12.87GiB\nv4_open index=0.15s plan=0.00s (index built once, reused by plan/inventory/head)\nv4_ssd_io mode=direct-aligned fallback=buffered-pread\nv4_autopin history=D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage selections=217329\nv4_hot_policy pin_slots_per_layer=3 repin_interval=6 mode=resident-ram rows16=hot-pins\n[DSV4 CUDA] no usable backend DLL (coli_cuda_dsv4_dg.dll / coli_cuda_dsv4.dll); GPU tier disabled (CPU path remains active).\nv4_gpu warning=backend-unavailable; continuing-CPU\nv4_cli mode=chat memory=limited target_only=1\nv4_dense_resident layers=43 bytes=6.226GiB\nv4_tokens prompt=26 generated=20 total=46 expert_requests=7219 hits=2269 misses=4950 hit_rate=31.431 bytes=66178252800 target_only=1\ngenerated_text=\n# Transformer Neural Network: Detailed Explanation\n\n## 1. OVERVIEW\n\nA transformer is a\ntiming time_to_first_token=78.041s after_first=117.239s\n[STATS] 224548 selections across 4694 distinct experts -> D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage\nv4_rows16 packed_slots=167\nv4_direct reads=6162 flock_reads=0 fallbacks=0 payload_bytes=66178252800\n"
+}

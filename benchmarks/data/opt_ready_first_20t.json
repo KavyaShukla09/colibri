@@ -1,0 +1,24 @@
+{
+  "status": "SUCCESS",
+  "returncode": 0,
+  "wall_sec": 180.24,
+  "tokens_requested": 20,
+  "mem_before": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 12.092094421386719,
+    "used_phys_gb": 3.7663612365722656,
+    "mem_load_pct": 23,
+    "total_commit_gb": 18.96251678466797,
+    "avail_commit_gb": 12.327369689941406
+  },
+  "mem_after": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 12.402862548828125,
+    "used_phys_gb": 3.4555931091308594,
+    "mem_load_pct": 21,
+    "total_commit_gb": 18.96251678466797,
+    "avail_commit_gb": 12.497512817382812
+  },
+  "stdout": "A transformer neural network is a sequence-to-sequence architecture built on self-attention mechanisms rather than recurrent or\nTUNE decode: 20 tokens in 176.591s\n",
+  "stderr": "[OMP] deepseek-v4: effective team size 4\nram_tiers available=12.60GiB dense=resident(6.23GiB) target_slots=8 target_cache=4.28GiB head=resident-bf16 projected=12.34GiB\nv4_open index=0.16s plan=0.00s (index built once, reused by plan/inventory/head)\nv4_ssd_io mode=direct-aligned fallback=buffered-pread\nv4_autopin history=D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage selections=246193\nv4_hot_policy pin_slots_per_layer=2 repin_interval=6 mode=resident-ram rows16=hot-pins\n[DSV4 CUDA] no usable backend DLL (coli_cuda_dsv4_dg.dll / coli_cuda_dsv4.dll); GPU tier disabled (CPU path remains active).\nv4_gpu warning=backend-unavailable; continuing-CPU\nv4_cli mode=chat memory=limited target_only=1\nv4_dense_resident layers=43 bytes=6.226GiB\ndecprof position=26 layers=43 hc=242 attn=3760 moe=4687 ms\ndecprof position=27 layers=43 hc=96 attn=1740 moe=3207 ms\ndecprof position=28 layers=43 hc=87 attn=1579 moe=2815 ms\ndecprof position=29 layers=43 hc=83 attn=1571 moe=2858 ms\ndecprof position=30 layers=43 hc=82 attn=1555 moe=3054 ms\ndecprof position=31 layers=43 hc=83 attn=1566 moe=2763 ms\ndecprof position=32 layers=43 hc=85 attn=1609 moe=2891 ms\ndecprof position=33 layers=43 hc=84 attn=1585 moe=2776 ms\ndecprof position=34 layers=43 hc=84 attn=1608 moe=2693 ms\ndecprof position=35 layers=43 hc=87 attn=1665 moe=2937 ms\ndecprof position=36 layers=43 hc=83 attn=1552 moe=2894 ms\ndecprof position=37 layers=43 hc=84 attn=1583 moe=2774 ms\ndecprof position=38 layers=43 hc=83 attn=1579 moe=2887 ms\ndecprof position=39 layers=43 hc=82 attn=1581 moe=2678 ms\ndecprof position=40 layers=43 hc=83 attn=1604 moe=2737 ms\ndecprof position=41 layers=43 hc=84 attn=1599 moe=2725 ms\ndecprof position=42 layers=43 hc=83 attn=1582 moe=2908 ms\ndecprof position=43 layers=43 hc=84 attn=1614 moe=2649 ms\nv4_tokens prompt=26 generated=20 total=46 expert_requests=7213 hits=1890 misses=5323 hit_rate=26.203 bytes=71165018112 target_only=1\ngenerated_text=A transformer neural network is a sequence-to-sequence architecture built on self-attention mechanisms rather than recurrent or\ntiming time_to_first_token=81.736s after_first=94.848s\n[STATS] 253406 selections across 4717 distinct experts -> D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage\nv4_rows16 packed_slots=107\nv4_direct reads=6650 flock_reads=0 fallbacks=0 payload_bytes=71165018112\n"
+}

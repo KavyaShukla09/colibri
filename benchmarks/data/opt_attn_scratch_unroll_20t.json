@@ -1,0 +1,24 @@
+{
+  "status": "SUCCESS",
+  "returncode": 0,
+  "wall_sec": 177.81,
+  "tokens_requested": 20,
+  "mem_before": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 12.09561538696289,
+    "used_phys_gb": 3.7628402709960938,
+    "mem_load_pct": 23,
+    "total_commit_gb": 18.96251678466797,
+    "avail_commit_gb": 12.345130920410156
+  },
+  "mem_after": {
+    "total_phys_gb": 15.858455657958984,
+    "avail_phys_gb": 12.251884460449219,
+    "used_phys_gb": 3.6065711975097656,
+    "mem_load_pct": 22,
+    "total_commit_gb": 18.96251678466797,
+    "avail_commit_gb": 12.40057373046875
+  },
+  "stdout": "A transformer neural network is a sequence-to-sequence architecture that processes entire sequences in parallel rather than one token\nTUNE decode: 20 tokens in 174.508s\n",
+  "stderr": "[OMP] deepseek-v4: effective team size 4\nram_tiers available=12.60GiB dense=resident(6.23GiB) target_slots=8 target_cache=4.28GiB head=resident-bf16 projected=12.34GiB\nv4_open index=0.17s plan=0.00s (index built once, reused by plan/inventory/head)\nv4_ssd_io mode=direct-aligned fallback=buffered-pread\nv4_autopin history=D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage selections=253406\nv4_hot_policy pin_slots_per_layer=2 repin_interval=6 mode=resident-ram rows16=hot-pins\n[DSV4 CUDA] no usable backend DLL (coli_cuda_dsv4_dg.dll / coli_cuda_dsv4.dll); GPU tier disabled (CPU path remains active).\nv4_gpu warning=backend-unavailable; continuing-CPU\nv4_cli mode=chat memory=limited target_only=1\nv4_dense_resident layers=43 bytes=6.226GiB\nv4_tokens prompt=26 generated=20 total=46 expert_requests=7213 hits=1850 misses=5363 hit_rate=25.648 bytes=71699791872 target_only=1\ngenerated_text=A transformer neural network is a sequence-to-sequence architecture that processes entire sequences in parallel rather than one token\ntiming time_to_first_token=79.010s after_first=95.496s\n[STATS] 260619 selections across 4726 distinct experts -> D:\\models\\DeepSeek-V4-Flash-REAP-150B/.coli_usage\nv4_rows16 packed_slots=107\nv4_direct reads=6708 flock_reads=0 fallbacks=0 payload_bytes=71699791872\n"
+}

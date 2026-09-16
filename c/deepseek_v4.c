@@ -1794,6 +1794,17 @@ struct ColiDeepSeekV4WindowAttentionState {
     float *compressed;
     int compressed_count;
     int compressed_capacity;
+    float *scratch_qa;
+    float *scratch_q;
+    float *scratch_kv_step;
+    float *scratch_attended;
+    float *scratch_oa;
+    float *scratch_norm_weight;
+    float *scratch_cosines;
+    float *scratch_sines;
+    float *scratch_input_act;
+    uint8_t *scratch_input_act_scales;
+    int *scratch_compressed_indices;
 };
 
 int coli_v4_window_attention_create(ColiDeepSeekV4WindowAttentionState **output,
@@ -1812,6 +1823,27 @@ int coli_v4_window_attention_create(ColiDeepSeekV4WindowAttentionState **output,
         *output = NULL;
         return -1;
     }
+    int q_rank = config->q_lora_rank;
+    int heads = config->num_attention_heads;
+    int head_dim = config->head_dim;
+    int rope_dim = config->qk_rope_head_dim;
+    int groups = config->o_groups;
+    int o_rank = config->o_lora_rank;
+    int hidden = config->hidden_size;
+
+    (*output)->scratch_qa = calloc((size_t)(q_rank > 0 ? q_rank : 1), sizeof(float));
+    (*output)->scratch_q = calloc((size_t)(heads * head_dim > 0 ? heads * head_dim : 1), sizeof(float));
+    (*output)->scratch_kv_step = calloc((size_t)(head_dim > 0 ? head_dim : 1), sizeof(float));
+    (*output)->scratch_attended = calloc((size_t)(heads * head_dim > 0 ? heads * head_dim : 1), sizeof(float));
+    (*output)->scratch_oa = calloc((size_t)(groups * o_rank > 0 ? groups * o_rank : 1), sizeof(float));
+    size_t norm_sz = (size_t)(q_rank > head_dim ? q_rank : head_dim);
+    (*output)->scratch_norm_weight = calloc(norm_sz > 0 ? norm_sz : 1, sizeof(float));
+    (*output)->scratch_cosines = calloc((size_t)(rope_dim > 0 ? rope_dim / 2 : 1), sizeof(float));
+    (*output)->scratch_sines = calloc((size_t)(rope_dim > 0 ? rope_dim / 2 : 1), sizeof(float));
+    (*output)->scratch_input_act = malloc((size_t)(hidden > 0 ? hidden : 1) * sizeof(float));
+    (*output)->scratch_input_act_scales = malloc((size_t)(hidden > 0 ? hidden / 128 + 1 : 1));
+    if (config->index_topk > 0)
+        (*output)->scratch_compressed_indices = malloc((size_t)config->index_topk * sizeof(int));
     return 0;
 }
 
@@ -1830,6 +1862,17 @@ void coli_v4_window_attention_destroy(ColiDeepSeekV4WindowAttentionState *state)
     coli_v4_compressor_destroy(state->compressor);
     free(state->compressed);
     free(state->kv);
+    free(state->scratch_compressed_indices);
+    free(state->scratch_input_act_scales);
+    free(state->scratch_input_act);
+    free(state->scratch_sines);
+    free(state->scratch_cosines);
+    free(state->scratch_norm_weight);
+    free(state->scratch_oa);
+    free(state->scratch_attended);
+    free(state->scratch_kv_step);
+    free(state->scratch_q);
+    free(state->scratch_qa);
     free(state);
 }
 
@@ -1960,20 +2003,22 @@ static int attention_token_impl(float *output,
         fp8_view(&wo_b, weights, "attn.wo_b"))
         return set_error(error, error_size, "missing native FP8 attention tensor");
 
-    float *qa = calloc((size_t)q_rank, sizeof(*qa));
-    float *q = calloc((size_t)heads * head_dim, sizeof(*q));
-    float *kv = calloc((size_t)head_dim, sizeof(*kv));
-    float *attended = calloc((size_t)heads * head_dim, sizeof(*attended));
-    float *oa = calloc((size_t)groups * o_rank, sizeof(*oa));
-    float *norm_weight = calloc((size_t)(q_rank > head_dim ? q_rank : head_dim),
+    float *qa = (state && state->scratch_qa) ? state->scratch_qa : calloc((size_t)q_rank, sizeof(*qa));
+    float *q = (state && state->scratch_q) ? state->scratch_q : calloc((size_t)heads * head_dim, sizeof(*q));
+    float *kv = (state && state->scratch_kv_step) ? state->scratch_kv_step : calloc((size_t)head_dim, sizeof(*kv));
+    float *attended = (state && state->scratch_attended) ? state->scratch_attended : calloc((size_t)heads * head_dim, sizeof(*attended));
+    float *oa = (state && state->scratch_oa) ? state->scratch_oa : calloc((size_t)groups * o_rank, sizeof(*oa));
+    float *norm_weight = (state && state->scratch_norm_weight) ? state->scratch_norm_weight : calloc((size_t)(q_rank > head_dim ? q_rank : head_dim),
                                 sizeof(*norm_weight));
-    float *cosines = calloc((size_t)rope_dim / 2, sizeof(*cosines));
-    float *sines = calloc((size_t)rope_dim / 2, sizeof(*sines));
+    float *cosines = (state && state->scratch_cosines) ? state->scratch_cosines : calloc((size_t)rope_dim / 2, sizeof(*cosines));
+    float *sines = (state && state->scratch_sines) ? state->scratch_sines : calloc((size_t)rope_dim / 2, sizeof(*sines));
     int *compressed_indices = NULL;
     int compressed_selected = 0;
     if (!qa || !q || !kv || !attended || !oa || !norm_weight || !cosines || !sines) {
-        free(sines); free(cosines); free(norm_weight); free(oa);
-        free(attended); free(kv); free(q); free(qa);
+        if (!state) {
+            free(sines); free(cosines); free(norm_weight); free(oa);
+            free(attended); free(kv); free(q); free(qa);
+        }
         return set_error(error, error_size, "out of memory in attention");
     }
 
@@ -1981,8 +2026,8 @@ static int attention_token_impl(float *output,
      * (il dedup rinviato da #1076). Bit-identico: stessi byte qdq, stesso
      * compute, GPU path invariato (riceve l'input raw come prima).
      * EN: wq_a and wkv consume the same input — qdq once, reuse via _pre. */
-    float *input_act = malloc((size_t)wq_a.columns * sizeof(*input_act));
-    uint8_t *input_act_scales = malloc((size_t)wq_a.columns / 128 + 1);
+    float *input_act = (state && state->scratch_input_act) ? state->scratch_input_act : malloc((size_t)wq_a.columns * sizeof(*input_act));
+    uint8_t *input_act_scales = (state && state->scratch_input_act_scales) ? state->scratch_input_act_scales : malloc((size_t)wq_a.columns / 128 + 1);
     int result = (!input_act || !input_act_scales ||
                   coli_fp8_activation_qdq_ref(input_act, input_act_scales, input,
                                               (size_t)wq_a.columns, 128)) ? -1 : 0;
@@ -2005,8 +2050,9 @@ static int attention_token_impl(float *output,
             &produced, input, position, error, error_size);
         if (!result && produced) state->compressed_count++;
         if (!result && state->indexer) {
-            compressed_indices = malloc((size_t)config->index_topk *
-                                        sizeof(*compressed_indices));
+            compressed_indices = (state->scratch_compressed_indices)
+                ? state->scratch_compressed_indices
+                : malloc((size_t)config->index_topk * sizeof(*compressed_indices));
             if (!compressed_indices) result = -1;
             else {
                 /* Same split as prefill (advance, then select_batch with a
@@ -2030,6 +2076,22 @@ static int attention_token_impl(float *output,
     if (!result) coli_bf16_round_array(q, (size_t)heads * head_dim);
     for (int head = 0; !result && head < heads; head++) {
         float *values = q + (size_t)head * head_dim;
+#if defined(__AVX2__)
+        if (head_dim == 128) {
+            __m256 sq0 = _mm256_setzero_ps();
+            __m256 sq1 = _mm256_setzero_ps();
+            for (int i = 0; i < 128; i += 16) {
+                __m256 v0 = _mm256_loadu_ps(values + i);
+                __m256 v1 = _mm256_loadu_ps(values + i + 8);
+                sq0 = _mm256_fmadd_ps(v0, v0, sq0);
+                sq1 = _mm256_fmadd_ps(v1, v1, sq1);
+            }
+            float mean_square = v4_hsum256_ps(_mm256_add_ps(sq0, sq1));
+            float scale = 1.0f / sqrtf(mean_square * (1.0f / 128.0f) + config->rms_norm_eps);
+            for (int i = 0; i < 128; i++) values[i] = coli_bf16_round(values[i] * scale);
+            continue;
+        }
+#endif
         float mean_square = 0.0f;
         for (int i = 0; i < head_dim; i++) mean_square += values[i] * values[i];
         float scale = 1.0f / sqrtf(mean_square / head_dim + config->rms_norm_eps);
@@ -2063,15 +2125,18 @@ static int attention_token_impl(float *output,
         coli_v4_rope_apply(kv_rope, 1, rope_dim, cosines, sines, 0);
         coli_bf16_round_array(kv_rope, (size_t)rope_dim);
         size_t nope = (size_t)(head_dim - rope_dim);
-        float *qdq = malloc(nope * sizeof(*qdq));
-        uint8_t *scales = malloc((nope + 63) / 64);
+        float qdq_buf[128];
+        uint8_t scales_buf[16];
+        float *qdq = nope <= 128 ? qdq_buf : malloc(nope * sizeof(*qdq));
+        uint8_t *scales = ((nope + 63) / 64) <= 16 ? scales_buf : malloc((nope + 63) / 64);
         if (!qdq || !scales || coli_fp8_activation_qdq_ref(qdq, scales, kv, nope, 64))
             result = -1;
         if (!result) {
             memcpy(kv, qdq, nope * sizeof(*kv));
             coli_bf16_round_array(kv, nope);
         }
-        free(scales); free(qdq);
+        if (nope > 128) free(qdq);
+        if (((nope + 63) / 64) > 16) free(scales);
     }
 
     const float *sinks = layer_data(weights, "attn.attn_sink", NULL);
@@ -2125,7 +2190,8 @@ static int attention_token_impl(float *output,
         if (!state->indexer) compressed_selected = state->compressed_count;
         int topk = state->window_size + compressed_selected;
         int kv_count = state->window_size + state->compressed_count;
-        int *indices = malloc((size_t)topk * sizeof(*indices));
+        int indices_buf[1024];
+        int *indices = topk <= 1024 ? indices_buf : malloc((size_t)topk * sizeof(*indices));
         float *all_kv = state->compressed_count
             ? malloc((size_t)kv_count * head_dim * sizeof(*all_kv)) : NULL;
         if (!indices || (state->compressed_count && !all_kv)) result = -1;
@@ -2157,7 +2223,7 @@ static int attention_token_impl(float *output,
                 1.0f / sqrtf((float)head_dim));
         }
         free(all_kv);
-        free(indices);
+        if (topk > 1024) free(indices);
     } else for (int head = 0; !result && head < heads; head++) {
         float *query = q + (size_t)head * head_dim;
         float score = 0.0f;
@@ -2204,10 +2270,12 @@ static int attention_token_impl(float *output,
     if (!result) result = coli_fp8_matvec_ref(output, &wo_b, oa);
     if (!result) coli_bf16_round_array(output, (size_t)hidden);
 
-    free(compressed_indices);
-    free(sines); free(cosines); free(norm_weight); free(oa);
-    free(attended); free(kv); free(q); free(qa);
-    free(input_act_scales); free(input_act);
+    if (!state || !state->scratch_compressed_indices) free(compressed_indices);
+    if (!state) {
+        free(sines); free(cosines); free(norm_weight); free(oa);
+        free(attended); free(kv); free(q); free(qa);
+        free(input_act_scales); free(input_act);
+    }
     if (result) return set_error(error, error_size, "attention computation failed");
     return 0;
 }
@@ -2267,6 +2335,17 @@ struct ColiDeepSeekV4WindowAttentionState {
     float *compressed;
     int compressed_count;
     int compressed_capacity;
+    float *scratch_qa;
+    float *scratch_q;
+    float *scratch_kv_step;
+    float *scratch_attended;
+    float *scratch_oa;
+    float *scratch_norm_weight;
+    float *scratch_cosines;
+    float *scratch_sines;
+    float *scratch_input_act;
+    uint8_t *scratch_input_act_scales;
+    int *scratch_compressed_indices;
 };
 
 int coli_v4_window_attention_create(ColiDeepSeekV4WindowAttentionState **output,
@@ -2285,6 +2364,27 @@ int coli_v4_window_attention_create(ColiDeepSeekV4WindowAttentionState **output,
         *output = NULL;
         return -1;
     }
+    int q_rank = config->q_lora_rank;
+    int heads = config->num_attention_heads;
+    int head_dim = config->head_dim;
+    int rope_dim = config->qk_rope_head_dim;
+    int groups = config->o_groups;
+    int o_rank = config->o_lora_rank;
+    int hidden = config->hidden_size;
+
+    (*output)->scratch_qa = calloc((size_t)(q_rank > 0 ? q_rank : 1), sizeof(float));
+    (*output)->scratch_q = calloc((size_t)(heads * head_dim > 0 ? heads * head_dim : 1), sizeof(float));
+    (*output)->scratch_kv_step = calloc((size_t)(head_dim > 0 ? head_dim : 1), sizeof(float));
+    (*output)->scratch_attended = calloc((size_t)(heads * head_dim > 0 ? heads * head_dim : 1), sizeof(float));
+    (*output)->scratch_oa = calloc((size_t)(groups * o_rank > 0 ? groups * o_rank : 1), sizeof(float));
+    size_t norm_sz = (size_t)(q_rank > head_dim ? q_rank : head_dim);
+    (*output)->scratch_norm_weight = calloc(norm_sz > 0 ? norm_sz : 1, sizeof(float));
+    (*output)->scratch_cosines = calloc((size_t)(rope_dim > 0 ? rope_dim / 2 : 1), sizeof(float));
+    (*output)->scratch_sines = calloc((size_t)(rope_dim > 0 ? rope_dim / 2 : 1), sizeof(float));
+    (*output)->scratch_input_act = malloc((size_t)(hidden > 0 ? hidden : 1) * sizeof(float));
+    (*output)->scratch_input_act_scales = malloc((size_t)(hidden > 0 ? hidden / 128 + 1 : 1));
+    if (config->index_topk > 0)
+        (*output)->scratch_compressed_indices = malloc((size_t)config->index_topk * sizeof(int));
     return 0;
 }
 
@@ -2303,6 +2403,17 @@ void coli_v4_window_attention_destroy(ColiDeepSeekV4WindowAttentionState *state)
     coli_v4_compressor_destroy(state->compressor);
     free(state->compressed);
     free(state->kv);
+    free(state->scratch_compressed_indices);
+    free(state->scratch_input_act_scales);
+    free(state->scratch_input_act);
+    free(state->scratch_sines);
+    free(state->scratch_cosines);
+    free(state->scratch_norm_weight);
+    free(state->scratch_oa);
+    free(state->scratch_attended);
+    free(state->scratch_kv_step);
+    free(state->scratch_q);
+    free(state->scratch_qa);
     free(state);
 }
 
@@ -4153,7 +4264,8 @@ int coli_v4_sparse_attention_ref(float *output, const float *queries,
     if (!output || !queries || !kv || !sinks || !indices || heads < 1 ||
         head_dimension < 1 || kv_count < 1 || topk < 1 || !(softmax_scale > 0.0f))
         return -1;
-    float *scores = malloc((size_t)topk * sizeof(*scores));
+    float scores_buf[1024];
+    float *scores = topk <= 1024 ? scores_buf : malloc((size_t)topk * sizeof(*scores));
     if (!scores) return -1;
     for (int head = 0; head < heads; head++) {
         const float *query = queries + (size_t)head * head_dimension;
@@ -4165,19 +4277,34 @@ int coli_v4_sparse_attention_ref(float *output, const float *queries,
                 continue;
             }
             if (index >= kv_count) {
-                free(scores);
+                if (topk > 1024) free(scores);
                 return -1;
             }
             const float *key = kv + (size_t)index * head_dimension;
             float score = 0.0f;
+#if defined(__AVX2__)
+            if (head_dimension == 128) {
+                __m256 acc0 = _mm256_setzero_ps();
+                __m256 acc1 = _mm256_setzero_ps();
+                for (int c = 0; c < 128; c += 16) {
+                    acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(query + c), _mm256_loadu_ps(key + c), acc0);
+                    acc1 = _mm256_fmadd_ps(_mm256_loadu_ps(query + c + 8), _mm256_loadu_ps(key + c + 8), acc1);
+                }
+                score = v4_hsum256_ps(_mm256_add_ps(acc0, acc1));
+            } else {
+                for (int column = 0; column < head_dimension; column++)
+                    score += query[column] * key[column];
+            }
+#else
             for (int column = 0; column < head_dimension; column++)
                 score += query[column] * key[column];
+#endif
             score *= softmax_scale;
             scores[rank] = score;
             if (score > maximum) maximum = score;
         }
         if (!isfinite(maximum)) {
-            free(scores);
+            if (topk > 1024) free(scores);
             return -1;
         }
         float denominator = expf(sinks[head] - maximum);
@@ -4190,13 +4317,31 @@ int coli_v4_sparse_attention_ref(float *output, const float *queries,
             /* TileLang casts the exp fragment to BF16 before value GEMM. */
             probability = coli_bf16_round(probability);
             const float *value = kv + (size_t)indices[rank] * head_dimension;
+#if defined(__AVX2__)
+            if (head_dimension == 128) {
+                __m256 p = _mm256_set1_ps(probability);
+                for (int c = 0; c < 128; c += 16) {
+                    __m256 ho0 = _mm256_loadu_ps(head_output + c);
+                    __m256 ho1 = _mm256_loadu_ps(head_output + c + 8);
+                    ho0 = _mm256_fmadd_ps(p, _mm256_loadu_ps(value + c), ho0);
+                    ho1 = _mm256_fmadd_ps(p, _mm256_loadu_ps(value + c + 8), ho1);
+                    _mm256_storeu_ps(head_output + c, ho0);
+                    _mm256_storeu_ps(head_output + c + 8, ho1);
+                }
+            } else {
+                for (int column = 0; column < head_dimension; column++)
+                    head_output[column] += probability * value[column];
+            }
+#else
             for (int column = 0; column < head_dimension; column++)
                 head_output[column] += probability * value[column];
+#endif
         }
+        float inv_denom = 1.0f / denominator;
         for (int column = 0; column < head_dimension; column++)
-            head_output[column] = coli_bf16_round(head_output[column] / denominator);
+            head_output[column] = coli_bf16_round(head_output[column] * inv_denom);
     }
-    free(scores);
+    if (topk > 1024) free(scores);
     return 0;
 }
 #endif /* COLI_V4_UNIT_SPARSE_ATTENTION */
@@ -4675,6 +4820,15 @@ static int dual_expert_load_finish(ExpertLoadHandle *handle) {
     handle->active = 0;
     return 0;
 }
+
+static int dual_expert_load_poll(const ExpertLoadHandle *handle) {
+    if (!handle || !handle->active || handle->loader_slot < 0 ||
+        handle->loader_slot >= dual_loader_lanes()) return 0;
+    pthread_mutex_lock(&dual_loader_pool.mutex);
+    int done = dual_loader_pool.slots[handle->loader_slot].completed;
+    pthread_mutex_unlock(&dual_loader_pool.mutex);
+    return done;
+}
 #endif
 
 #if !defined(COLI_V4_DISABLE_PERSISTENT_EXPERT_LOADER) && \
@@ -4824,6 +4978,15 @@ static double v4_now_mono(void) {   /* #890 phase timing, same clock as disk_sec
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 
+static int expert_load_poll(const ExpertLoadHandle *handle) {
+    if (!handle || !handle->active) return 0;
+#ifdef COLI_V4_EXPERIMENTAL_DUAL_EXPERT_LOADER
+    if (handle->loader_slot >= 0)
+        return dual_expert_load_poll(handle);
+#endif
+    return 0;
+}
+
 static int profiled_expert_load_start(ExpertLoadHandle *handle,
                                       ExpertLoadJob *job) {
 #ifdef COLI_V4_EXPERIMENTAL_BLOCK_OTHER_PROFILE
@@ -4847,6 +5010,10 @@ static int profiled_expert_load_finish(ExpertLoadHandle *handle) {
                               coli_v4_block_profile_now() - began);
 #endif
     return result;
+}
+
+static int profiled_expert_load_poll(const ExpertLoadHandle *handle) {
+    return expert_load_poll(handle);
 }
 
 #ifdef COLI_V4_GPU_TIER
@@ -5245,38 +5412,45 @@ static int moe_token_pipeline(float *output,
     {
         /* PURE CPU STREAMING PIPELINE:
          * Overlap expert compute with NVMe loading of subsequent experts.
-         * As each loader finishes, immediately compute and release the expert,
-         * so CPU cores never sit idle waiting for all experts to load. */
-        for (int current = 0; !result && current < selected; current++) {
-            int slot = current % dual_loader_lanes();
-            if (!loader_active[slot] ||
-                profiled_expert_load_finish(&loaders[slot]) != 0) {
+         * Ready-first compute: cache hits in RAM complete in microseconds,
+         * while NVMe reads take milliseconds. Computing ready experts (hits)
+         * immediately keeps CPU cores active while NVMe Direct I/O reads
+         * complete in parallel. */
+        float expert_outputs_buf[DUAL_EXPERT_LOADER_MAX][4096];
+        float *heap_outputs = d > 4096 ? malloc((size_t)selected * d * sizeof(float)) : NULL;
+        int processed = 0;
+        while (processed < selected && !result) {
+            int target = -1;
+            /* 1. First probe for any loader that is already completed (RAM cache hits) */
+            for (int i = 0; i < selected; i++) {
+                if (loader_active[i] && profiled_expert_load_poll(&loaders[i])) {
+                    target = i;
+                    break;
+                }
+            }
+            /* 2. If no loader is finished yet, wait on the first active loader in order */
+            if (target < 0) {
+                for (int i = 0; i < selected; i++) {
+                    if (loader_active[i]) {
+                        target = i;
+                        break;
+                    }
+                }
+            }
+            if (target < 0) break;
+
+            if (profiled_expert_load_finish(&loaders[target]) != 0) {
                 result = -1; break;
             }
-            loader_active[slot] = 0;
-            if (jobs[slot].result) { result = -1; break; }
+            loader_active[target] = 0;
+            if (jobs[target].result) { result = -1; break; }
 
-            int next = current + dual_loader_lanes();
-            if (next < selected) {
-                memset(&jobs[slot], 0, sizeof(jobs[slot]));
-                jobs[slot].store = store;
-                jobs[slot].key = (ColiExpertKey){weights->plan.layer,
-                                                expert_ids[next]};
-                jobs[slot].result = -1;
-                if (profiled_expert_load_start(&loaders[slot],
-                                               &jobs[slot]) != 0)
-                    result = -1;
-                else
-                    loader_active[slot] = 1;
-            }
-            if (!result) {
-                result = coli_v4_expert_forward_ref(
-                    expert_output, &jobs[slot].view, input,
-                    expert_weights[current], config->swiglu_limit);
-                if (!result)
-                    for (int i = 0; i < d; i++) output[i] += expert_output[i];
-            }
-            coli_expert_release(store, &jobs[slot].view);
+            float *curr_out = heap_outputs ? heap_outputs + (size_t)target * d : expert_outputs_buf[target];
+            result = coli_v4_expert_forward_ref(
+                curr_out, &jobs[target].view, input,
+                expert_weights[target], config->swiglu_limit);
+            coli_expert_release(store, &jobs[target].view);
+            processed++;
         }
         for (int slot = 0; slot < dual_loader_lanes(); slot++)
             if (loader_active[slot]) {
@@ -5284,9 +5458,16 @@ static int moe_token_pipeline(float *output,
                 if (!jobs[slot].result)
                     coli_expert_release(store, &jobs[slot].view);
             }
-        if (!result)
-            for (int i = 0; i < d; i++)
-                output[i] = coli_bf16_round(output[i] + shared_output[i]);
+        if (!result) {
+            for (int i = 0; i < selected; i++) {
+                const float *curr_out = heap_outputs ? heap_outputs + (size_t)i * d : expert_outputs_buf[i];
+                for (int j = 0; j < d; j++)
+                    output[j] += curr_out[j];
+            }
+            for (int j = 0; j < d; j++)
+                output[j] = coli_bf16_round(output[j] + shared_output[j]);
+        }
+        free(heap_outputs);
     }
 #else
     for (int current = 0; current < selected && loader_active; current++) {
@@ -6745,6 +6926,17 @@ struct ColiDeepSeekV4WindowAttentionState {
     float *compressed;
     int compressed_count;
     int compressed_capacity;
+    float *scratch_qa;
+    float *scratch_q;
+    float *scratch_kv_step;
+    float *scratch_attended;
+    float *scratch_oa;
+    float *scratch_norm_weight;
+    float *scratch_cosines;
+    float *scratch_sines;
+    float *scratch_input_act;
+    uint8_t *scratch_input_act_scales;
+    int *scratch_compressed_indices;
 };
 
 int coli_v4_window_attention_create(ColiDeepSeekV4WindowAttentionState **output,
@@ -6763,6 +6955,27 @@ int coli_v4_window_attention_create(ColiDeepSeekV4WindowAttentionState **output,
         *output = NULL;
         return -1;
     }
+    int q_rank = config->q_lora_rank;
+    int heads = config->num_attention_heads;
+    int head_dim = config->head_dim;
+    int rope_dim = config->qk_rope_head_dim;
+    int groups = config->o_groups;
+    int o_rank = config->o_lora_rank;
+    int hidden = config->hidden_size;
+
+    (*output)->scratch_qa = calloc((size_t)(q_rank > 0 ? q_rank : 1), sizeof(float));
+    (*output)->scratch_q = calloc((size_t)(heads * head_dim > 0 ? heads * head_dim : 1), sizeof(float));
+    (*output)->scratch_kv_step = calloc((size_t)(head_dim > 0 ? head_dim : 1), sizeof(float));
+    (*output)->scratch_attended = calloc((size_t)(heads * head_dim > 0 ? heads * head_dim : 1), sizeof(float));
+    (*output)->scratch_oa = calloc((size_t)(groups * o_rank > 0 ? groups * o_rank : 1), sizeof(float));
+    size_t norm_sz = (size_t)(q_rank > head_dim ? q_rank : head_dim);
+    (*output)->scratch_norm_weight = calloc(norm_sz > 0 ? norm_sz : 1, sizeof(float));
+    (*output)->scratch_cosines = calloc((size_t)(rope_dim > 0 ? rope_dim / 2 : 1), sizeof(float));
+    (*output)->scratch_sines = calloc((size_t)(rope_dim > 0 ? rope_dim / 2 : 1), sizeof(float));
+    (*output)->scratch_input_act = malloc((size_t)(hidden > 0 ? hidden : 1) * sizeof(float));
+    (*output)->scratch_input_act_scales = malloc((size_t)(hidden > 0 ? hidden / 128 + 1 : 1));
+    if (config->index_topk > 0)
+        (*output)->scratch_compressed_indices = malloc((size_t)config->index_topk * sizeof(int));
     return 0;
 }
 
@@ -6781,6 +6994,17 @@ void coli_v4_window_attention_destroy(ColiDeepSeekV4WindowAttentionState *state)
     coli_v4_compressor_destroy(state->compressor);
     free(state->compressed);
     free(state->kv);
+    free(state->scratch_compressed_indices);
+    free(state->scratch_input_act_scales);
+    free(state->scratch_input_act);
+    free(state->scratch_sines);
+    free(state->scratch_cosines);
+    free(state->scratch_norm_weight);
+    free(state->scratch_oa);
+    free(state->scratch_attended);
+    free(state->scratch_kv_step);
+    free(state->scratch_q);
+    free(state->scratch_qa);
     free(state);
 }
 
@@ -16412,6 +16636,7 @@ void coli_fp4_matvec_rows16_order(float *y, const uint8_t *q4,
                 }
                 __m256 scale = _mm256_loadu_ps(sc);
                 __m256 partial = half_rows ? sum1 : sum0;
+                __m256 block_acc = _mm256_setzero_ps();
                 for (int cb = 0; cb < 4; cb++) {
                     __m256 blk[8];
                     for (int r8 = 0; r8 < 8; r8++)
@@ -16453,10 +16678,10 @@ void coli_fp4_matvec_rows16_order(float *y, const uint8_t *q4,
                     for (int column = 0; column < 8; column++) {
                         __m256 xv = _mm256_set1_ps(
                             x[base + cb * 8 + column]);
-                        partial = _mm256_add_ps(partial, _mm256_mul_ps(
-                            _mm256_mul_ps(xv, weights[column]), scale));
+                        block_acc = _mm256_fmadd_ps(weights[column], xv, block_acc);
                     }
                 }
+                partial = _mm256_fmadd_ps(block_acc, scale, partial);
                 if (half_rows) sum1 = partial; else sum0 = partial;
             }
         }
@@ -16579,32 +16804,7 @@ static int fp8_matvec_validate(const ColiTensorView *weight) {
 
 /* Compute CPU su attivazione GIA' qdq (estratto invariato da matvec_ref).
  * EN: CPU compute on an already-qdq'd activation, extracted verbatim. */
-#ifdef __AVX2__
-/* Branchless SIMD decode of 8 E4M3FN codes -> 8 f32, byte-identical to
- * coli_e4m3fn_decode for all 256 inputs (exhaustively verified). Replaces a
- * slow per-element _mm256_i32gather_ps from a 256-float LUT. E4M3FN values are
- * exact, so the f32 bit pattern is built directly: normals via integer field
- * assembly, subnormals as (float)mantissa*2^-9 (exact), NaN (code&0x7F==0x7F)
- * as canonical qNaN overwriting the sign. */
-static inline __m256 v4_fp8_decode8(__m256i codes) {
-    __m256i man = _mm256_and_si256(codes, _mm256_set1_epi32(7));
-    __m256i exp = _mm256_and_si256(_mm256_srli_epi32(codes, 3), _mm256_set1_epi32(0xF));
-    __m256i sgn = _mm256_slli_epi32(_mm256_srli_epi32(codes, 7), 31);
-    __m256i nbits = _mm256_or_si256(
-        _mm256_slli_epi32(_mm256_add_epi32(exp, _mm256_set1_epi32(120)), 23),
-        _mm256_slli_epi32(man, 20));
-    __m256 nval = _mm256_castsi256_ps(nbits);
-    float man_factor = 1.0f / (float)(1 << 9);
-    __m256 sval = _mm256_mul_ps(_mm256_cvtepi32_ps(man), _mm256_set1_ps(man_factor));
-    __m256 is_sub = _mm256_castsi256_ps(_mm256_cmpeq_epi32(exp, _mm256_setzero_si256()));
-    __m256i sbits = _mm256_or_si256(
-        _mm256_castps_si256(_mm256_blendv_ps(nval, sval, is_sub)), sgn);
-    __m256i is_nan = _mm256_cmpeq_epi32(
-        _mm256_and_si256(codes, _mm256_set1_epi32(0x7F)), _mm256_set1_epi32(0x7F));
-    return _mm256_castsi256_ps(
-        _mm256_blendv_epi8(sbits, _mm256_set1_epi32(0x7FC00000), is_nan));
-}
-#endif
+
 
 static int fp8_matvec_compute(float *output, const ColiTensorView *weight,
                               const float *activation) {
@@ -16626,16 +16826,31 @@ static int fp8_matvec_compute(float *output, const ColiTensorView *weight,
             for (size_t base = 0; base < columns; base += 128) {
                 __m256 scale = _mm256_set1_ps(
                     scales[scale_row * scale_columns + base / 128]);
-                for (size_t offset = 0; offset < 128; offset++) {
+                __m256 block_acc0 = _mm256_setzero_ps();
+                __m256 block_acc1 = _mm256_setzero_ps();
+                __m256 block_acc2 = _mm256_setzero_ps();
+                __m256 block_acc3 = _mm256_setzero_ps();
+                for (size_t offset = 0; offset < 128; offset += 4) {
                     size_t column = base + offset;
-                    __m128i bytes = _mm_loadl_epi64((const __m128i *)(data +
-                        ((size_t)tile * columns + column) * 8));
-                    __m256i codes = _mm256_cvtepu8_epi32(bytes);
-                    __m256 values = v4_fp8_decode8(codes);
-                    __m256 x = _mm256_set1_ps(activation[column]);
-                    sum = _mm256_add_ps(sum, _mm256_mul_ps(
-                        _mm256_mul_ps(x, values), scale));
+                    const uint8_t *p = data + ((size_t)tile * columns + column) * 8;
+                    __m128i b01 = _mm_loadu_si128((const __m128i *)p);
+                    __m128i b23 = _mm_loadu_si128((const __m128i *)(p + 16));
+                    __m256 values0 = v4_fp8_decode8(_mm256_cvtepu8_epi32(b01));
+                    __m256 values1 = v4_fp8_decode8(_mm256_cvtepu8_epi32(_mm_srli_si128(b01, 8)));
+                    __m256 values2 = v4_fp8_decode8(_mm256_cvtepu8_epi32(b23));
+                    __m256 values3 = v4_fp8_decode8(_mm256_cvtepu8_epi32(_mm_srli_si128(b23, 8)));
+                    __m256 x0 = _mm256_set1_ps(activation[column]);
+                    __m256 x1 = _mm256_set1_ps(activation[column + 1]);
+                    __m256 x2 = _mm256_set1_ps(activation[column + 2]);
+                    __m256 x3 = _mm256_set1_ps(activation[column + 3]);
+                    block_acc0 = _mm256_fmadd_ps(values0, x0, block_acc0);
+                    block_acc1 = _mm256_fmadd_ps(values1, x1, block_acc1);
+                    block_acc2 = _mm256_fmadd_ps(values2, x2, block_acc2);
+                    block_acc3 = _mm256_fmadd_ps(values3, x3, block_acc3);
                 }
+                __m256 block_acc = _mm256_add_ps(_mm256_add_ps(block_acc0, block_acc1),
+                                                 _mm256_add_ps(block_acc2, block_acc3));
+                sum = _mm256_fmadd_ps(block_acc, scale, sum);
             }
             _mm256_storeu_ps(output + (size_t)tile * 8, sum);
         }
@@ -16803,9 +17018,6 @@ int coli_fp8_dual_matvec_ref(float *output_a, float *output_b,
         if (rows % 8) {
             return -1;
         }
-        float fp8[256];
-        for (int code = 0; code < 256; code++)
-            fp8[code] = coli_e4m3fn_decode((uint8_t)code);
         const uint8_t *data_a = a->data, *data_b = b->data;
         const float *scales_a = a->scales, *scales_b = b->scales;
         #pragma omp parallel for schedule(static)
@@ -16817,21 +17029,30 @@ int coli_fp8_dual_matvec_ref(float *output_a, float *output_b,
                 size_t scale_index = scale_row * scale_columns + base / 128;
                 __m256 scale_a = _mm256_set1_ps(scales_a[scale_index]);
                 __m256 scale_b = _mm256_set1_ps(scales_b[scale_index]);
-                for (size_t offset = 0; offset < 128; offset++) {
+                __m256 block_a0 = _mm256_setzero_ps();
+                __m256 block_a1 = _mm256_setzero_ps();
+                __m256 block_b0 = _mm256_setzero_ps();
+                __m256 block_b1 = _mm256_setzero_ps();
+                for (size_t offset = 0; offset < 128; offset += 2) {
                     size_t column = base + offset;
                     size_t packed = ((size_t)tile * columns + column) * 8;
-                    __m256i codes_a = _mm256_cvtepu8_epi32(_mm_loadl_epi64(
-                        (const __m128i *)(data_a + packed)));
-                    __m256i codes_b = _mm256_cvtepu8_epi32(_mm_loadl_epi64(
-                        (const __m128i *)(data_b + packed)));
-                    __m256 values_a = _mm256_i32gather_ps(fp8, codes_a, 4);
-                    __m256 values_b = _mm256_i32gather_ps(fp8, codes_b, 4);
-                    __m256 x = _mm256_set1_ps(activation[column]);
-                    sum_a = _mm256_add_ps(sum_a, _mm256_mul_ps(
-                        _mm256_mul_ps(x, values_a), scale_a));
-                    sum_b = _mm256_add_ps(sum_b, _mm256_mul_ps(
-                        _mm256_mul_ps(x, values_b), scale_b));
+                    __m128i ba = _mm_loadu_si128((const __m128i *)(data_a + packed));
+                    __m128i bb = _mm_loadu_si128((const __m128i *)(data_b + packed));
+                    __m256 values_a0 = v4_fp8_decode8(_mm256_cvtepu8_epi32(ba));
+                    __m256 values_a1 = v4_fp8_decode8(_mm256_cvtepu8_epi32(_mm_srli_si128(ba, 8)));
+                    __m256 values_b0 = v4_fp8_decode8(_mm256_cvtepu8_epi32(bb));
+                    __m256 values_b1 = v4_fp8_decode8(_mm256_cvtepu8_epi32(_mm_srli_si128(bb, 8)));
+                    __m256 x0 = _mm256_set1_ps(activation[column]);
+                    __m256 x1 = _mm256_set1_ps(activation[column + 1]);
+                    block_a0 = _mm256_fmadd_ps(values_a0, x0, block_a0);
+                    block_a1 = _mm256_fmadd_ps(values_a1, x1, block_a1);
+                    block_b0 = _mm256_fmadd_ps(values_b0, x0, block_b0);
+                    block_b1 = _mm256_fmadd_ps(values_b1, x1, block_b1);
                 }
+                __m256 block_a = _mm256_add_ps(block_a0, block_a1);
+                __m256 block_b = _mm256_add_ps(block_b0, block_b1);
+                sum_a = _mm256_fmadd_ps(block_a, scale_a, sum_a);
+                sum_b = _mm256_fmadd_ps(block_b, scale_b, sum_b);
             }
             _mm256_storeu_ps(output_a + (size_t)tile * 8, sum_a);
             _mm256_storeu_ps(output_b + (size_t)tile * 8, sum_b);
@@ -17279,6 +17500,7 @@ int coli_fp4_matvec_rows16_v10(float *output,
                 scale,
                 scales + ((size_t)tile * scale_stride + base / 32) * 16,
                 &tables);
+            __m256 block_acc[2] = {_mm256_setzero_ps(), _mm256_setzero_ps()};
             for (size_t offset = 0; offset < 32; offset++) {
                 size_t column = base + offset;
                 const unsigned char *codes = data +
@@ -17287,9 +17509,10 @@ int coli_fp4_matvec_rows16_v10(float *output,
                 avx2_decode_rows16(values, codes, column & 1, &tables);
                 __m256 x = _mm256_set1_ps(activation[column]);
                 for (int half = 0; half < 2; half++)
-                    sum[half] = _mm256_add_ps(sum[half], _mm256_mul_ps(
-                        _mm256_mul_ps(x, values[half]), scale[half]));
+                    block_acc[half] = _mm256_fmadd_ps(values[half], x, block_acc[half]);
             }
+            for (int half = 0; half < 2; half++)
+                sum[half] = _mm256_fmadd_ps(block_acc[half], scale[half], sum[half]);
         }
         _mm256_storeu_ps(output + (size_t)tile * 16, sum[0]);
         _mm256_storeu_ps(output + (size_t)tile * 16 + 8, sum[1]);
@@ -17415,6 +17638,8 @@ int coli_fp4_dual_matvec_rows16_v10(float *output_a, float *output_b,
             __m256 scale_a[2], scale_b[2];
             avx2_decode_scales(scale_a, scales_a + scale_offset, &tables);
             avx2_decode_scales(scale_b, scales_b + scale_offset, &tables);
+            __m256 block_a[2] = {_mm256_setzero_ps(), _mm256_setzero_ps()};
+            __m256 block_b[2] = {_mm256_setzero_ps(), _mm256_setzero_ps()};
             for (size_t offset = 0; offset < 32; offset++) {
                 size_t column = base + offset;
                 size_t packed_offset =
@@ -17426,11 +17651,13 @@ int coli_fp4_dual_matvec_rows16_v10(float *output_a, float *output_b,
                                    column & 1, &tables);
                 __m256 x = _mm256_set1_ps(activation[column]);
                 for (int half = 0; half < 2; half++) {
-                    sum_a[half] = _mm256_add_ps(sum_a[half], _mm256_mul_ps(
-                        _mm256_mul_ps(x, values_a[half]), scale_a[half]));
-                    sum_b[half] = _mm256_add_ps(sum_b[half], _mm256_mul_ps(
-                        _mm256_mul_ps(x, values_b[half]), scale_b[half]));
+                    block_a[half] = _mm256_fmadd_ps(values_a[half], x, block_a[half]);
+                    block_b[half] = _mm256_fmadd_ps(values_b[half], x, block_b[half]);
                 }
+            }
+            for (int half = 0; half < 2; half++) {
+                sum_a[half] = _mm256_fmadd_ps(block_a[half], scale_a[half], sum_a[half]);
+                sum_b[half] = _mm256_fmadd_ps(block_b[half], scale_b[half], sum_b[half]);
             }
         }
         _mm256_storeu_ps(output_a + (size_t)tile * 16, sum_a[0]);
